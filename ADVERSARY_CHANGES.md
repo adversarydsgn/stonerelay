@@ -2,6 +2,32 @@
 
 Fork-side changes to `stonerelay` (vs. upstream `ran-codes/obsidian-notion-database-sync`).
 
+## v0.2.0-adv — 2026-04-24
+
+Adds 6 missing property type handlers identified by Agent U's v0.1.0-adv coverage audit. Live pulls in v0.1.0-adv silently dropped these — most critically `unique_id` (BUG-NN, FRIC-NN, SEC-NN auto-IDs) and `formula` (Power 150's `Contact Next`).
+
+**New handlers in `src/page-writer.ts` (`mapPropertiesToFrontmatter`):**
+
+| Type | Frontmatter shape |
+|---|---|
+| `unique_id` | Combined string `"BUG-57"` (or just number if no prefix); `null` if empty |
+| `formula` | Inner-type-aware: string/number/boolean scalar; date as ISO string (or `start → end` for ranges) |
+| `rollup` | Inner-type-aware: number/date as scalars; array as YAML list of simplified items |
+| `verification` | `state` only (`"verified"` / `"unverified"`); metadata (verified_by, date) discarded |
+| `created_by` | User `name` if present, else `id` |
+| `last_edited_by` | User `name` if present, else `id` |
+
+**Behavior notes:**
+- Rollup arrays are simplified per inner type (titles/rich_text → string, select → name, relation → id). Unknown inner types JSON-encode as fallback.
+- All new handlers return `null` for missing/empty values rather than throwing or omitting the key.
+- Additive only — v0.1.0-adv handlers untouched.
+
+**Known limitations (deferred to v0.3+):**
+- `verification` does not emit `verified_by` user or verification date — state only.
+- `button` property type still skipped (no user-facing value to emit).
+- Relation properties still emit bare UUIDs (display-name resolution = v0.3+).
+- No persisted DB list in `data.json` (modal-driven sync only) — v0.3+.
+
 ## v0.1.0-adv — 2026-04-24
 
 Fork baseline. No code changes yet.

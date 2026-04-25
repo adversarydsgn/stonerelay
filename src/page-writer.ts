@@ -57,6 +57,43 @@ function getPageTitle(page: PageObjectResponse): string {
 	return "Untitled";
 }
 
+function simplifyRollupItem(item: Record<string, unknown>): unknown {
+	const t = item.type as string | undefined;
+	if (!t) return JSON.stringify(item);
+	const inner = (item as Record<string, unknown>)[t];
+	if (inner === null || inner === undefined) return null;
+	switch (t) {
+		case "title":
+		case "rich_text":
+			return Array.isArray(inner) ? convertRichText(inner as Parameters<typeof convertRichText>[0]) : String(inner);
+		case "number":
+			return inner as number;
+		case "select":
+			return (inner as { name?: string } | null)?.name ?? null;
+		case "multi_select":
+			return Array.isArray(inner) ? (inner as Array<{ name: string }>).map((s) => s.name) : [];
+		case "status":
+			return (inner as { name?: string } | null)?.name ?? null;
+		case "date": {
+			const d = inner as { start: string; end: string | null } | null;
+			if (!d) return null;
+			return d.end ? `${d.start} → ${d.end}` : d.start;
+		}
+		case "checkbox":
+			return inner as boolean;
+		case "url":
+		case "email":
+		case "phone_number":
+			return inner as string | null;
+		case "people":
+			return Array.isArray(inner) ? (inner as Array<{ id: string; name?: string | null }>).map((p) => p.name || p.id) : [];
+		case "relation":
+			return Array.isArray(inner) ? (inner as Array<{ id: string }>).map((r) => r.id) : [];
+		default:
+			return JSON.stringify(inner);
+	}
+}
+
 function sanitizeFileName(name: string): string {
 	return name.replace(/[\\/:*?"<>|]/g, "-").trim() || "Untitled";
 }
@@ -132,7 +169,71 @@ function mapPropertiesToFrontmatter(
 			case "last_edited_time":
 				frontmatter[key] = prop.last_edited_time;
 				break;
-			// Skip formula, rollup, button, unique_id, verification — complex or non-user types
+			case "unique_id": {
+				const uid = (prop as { unique_id: { prefix: string | null; number: number | null } }).unique_id;
+				if (uid && uid.number !== null && uid.number !== undefined) {
+					frontmatter[key] = uid.prefix ? `${uid.prefix}-${uid.number}` : String(uid.number);
+				} else {
+					frontmatter[key] = null;
+				}
+				break;
+			}
+			case "formula": {
+				const f = (prop as { formula: { type: string; string?: string | null; number?: number | null; boolean?: boolean | null; date?: { start: string; end: string | null } | null } }).formula;
+				if (!f) {
+					frontmatter[key] = null;
+				} else if (f.type === "string") {
+					frontmatter[key] = f.string ?? null;
+				} else if (f.type === "number") {
+					frontmatter[key] = f.number ?? null;
+				} else if (f.type === "boolean") {
+					frontmatter[key] = f.boolean ?? null;
+				} else if (f.type === "date") {
+					if (f.date) {
+						frontmatter[key] = f.date.end ? `${f.date.start} → ${f.date.end}` : f.date.start;
+					} else {
+						frontmatter[key] = null;
+					}
+				} else {
+					frontmatter[key] = null;
+				}
+				break;
+			}
+			case "rollup": {
+				const r = (prop as { rollup: { type: string; number?: number | null; date?: { start: string; end: string | null } | null; array?: Array<Record<string, unknown>> } }).rollup;
+				if (!r) {
+					frontmatter[key] = null;
+				} else if (r.type === "number") {
+					frontmatter[key] = r.number ?? null;
+				} else if (r.type === "date") {
+					if (r.date) {
+						frontmatter[key] = r.date.end ? `${r.date.start} → ${r.date.end}` : r.date.start;
+					} else {
+						frontmatter[key] = null;
+					}
+				} else if (r.type === "array" && Array.isArray(r.array)) {
+					frontmatter[key] = r.array.map((item) => simplifyRollupItem(item));
+				} else {
+					frontmatter[key] = null;
+				}
+				break;
+			}
+			case "verification": {
+				const v = (prop as { verification: { state: string } | null }).verification;
+				frontmatter[key] = v?.state ?? null;
+				break;
+			}
+			case "created_by": {
+				const u = (prop as { created_by: { id: string; name?: string | null } }).created_by;
+				frontmatter[key] = u ? (u.name || u.id) : null;
+				break;
+			}
+			case "last_edited_by": {
+				const u = (prop as { last_edited_by: { id: string; name?: string | null } }).last_edited_by;
+				frontmatter[key] = u ? (u.name || u.id) : null;
+				break;
+			}
+			// Skip button — non-user-content type
 			default:
 				break;
 		}
