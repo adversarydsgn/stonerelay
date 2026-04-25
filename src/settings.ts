@@ -375,7 +375,7 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 			.setDesc("Paste the Notion database link, or just the 32-character ID. We'll fetch the rest from Notion.")
 			.addText((text) =>
 				text
-					.setPlaceholder("https://www.notion.so/... or 00000000000000000000000000000000")
+					.setPlaceholder("https://www.notion.so/... or 32-character database ID")
 					.setValue(state.input)
 					.then((t) => {
 						t.inputEl.addClass("notion-sync-input-wide");
