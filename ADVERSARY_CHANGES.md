@@ -2,6 +2,25 @@
 
 Fork-side changes to `stonerelay` (vs. upstream `ran-codes/obsidian-notion-database-sync`).
 
+## v0.6.3 — 2026-04-25
+
+Polishes the Add/Edit Database form so sync direction consequences are visible before saving.
+
+**Form UX behavior:**
+
+| Area | Change |
+|---|---|
+| Direction labels | Replaces terse Pull/Push/Bidirectional labels with source-and-seeding consequence copy |
+| Bidirectional caveat | Calls out v0.6 last-writer-wins behavior until v0.7 conflict handling ships |
+| Vault folder | Renames Output folder to Vault folder and pivots helper text by selected direction |
+| Test connection | Adds a preview with Notion row/property counts, vault markdown count, and direction-aware next-sync action |
+| Empty source warnings | Shows non-blocking warnings for Push from an empty vault folder and Pull from an empty Notion database |
+| Edit safety | Confirms direction changes for entries that have already synced |
+
+**Behavior notes:**
+- UX-only release: no schema changes and no changes to sync execution logic in `src/push.ts` or `src/database-freezer.ts`.
+- Bidirectional remains selectable in v0.6.3 to preserve existing behavior; v0.7 owns the deeper source-of-truth model.
+
 ## v0.6.2 — 2026-04-25
 
 Preserves timestamp integrity through Obsidian → Notion push round-trips.

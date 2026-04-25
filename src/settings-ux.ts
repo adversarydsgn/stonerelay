@@ -1,10 +1,38 @@
 import { Client } from "@notionhq/client";
+import { SyncDirection } from "./types";
 
 export interface DatabaseMetadata {
 	title: string;
 	propertyCount?: number;
 	rowCount?: string;
 	rowCountApproximate?: boolean;
+}
+
+export const DIRECTION_LABELS: Record<SyncDirection, string> = {
+	pull: "Pull (Notion is source — vault gets seeded)",
+	push: "Push (Vault is source — Notion gets seeded)",
+	bidirectional: "Bidirectional (both authoritative — v0.7+ only)",
+};
+
+export const DIRECTION_HELPER =
+	"Bidirectional uses last-writer-wins until v0.7 ships proper conflict resolution. Use only if you understand the risk.";
+
+export const EMPTY_PUSH_WARNING =
+	"⚠️ Vault folder is empty. A Push will not create any Notion rows. Did you mean Pull?";
+
+export const EMPTY_PULL_WARNING =
+	"⚠️ Notion DB has 0 rows. A Pull will not create any vault files. Did you mean Push?";
+
+export interface VaultFolderStats {
+	path: string;
+	exists: boolean;
+	markdownFiles: number;
+}
+
+export interface ConnectionPreviewInput {
+	direction: SyncDirection;
+	metadata: DatabaseMetadata;
+	vault: VaultFolderStats;
 }
 
 export type FetchDatabaseMetadataResult =
@@ -52,6 +80,53 @@ export function trimApiKey(value: string): string {
 	return value.trim();
 }
 
+export function vaultFolderHelper(direction: SyncDirection): string {
+	if (direction === "push") {
+		return "Vault folder containing markdown files to push to Notion. Files in this folder will be uploaded as Notion rows.";
+	}
+	if (direction === "bidirectional") {
+		return "Vault folder used for both directions. Files here will be both written-to (from Notion pulls) and read-from (for Notion pushes).";
+	}
+	return "Vault folder where pulled notes will be created. Existing files with same name will be overwritten.";
+}
+
+export function buildConnectionPreview(input: ConnectionPreviewInput): string {
+	const { direction, metadata, vault } = input;
+	const details: string[] = [];
+	if (metadata.propertyCount !== undefined) {
+		details.push(`${metadata.propertyCount} properties`);
+	}
+	if (metadata.rowCount !== undefined) {
+		details.push(`${metadata.rowCount} rows`);
+	}
+
+	const connected = details.length > 0
+		? `✓ Connected to "${metadata.title}" · ${details.join(" · ")}`
+		: `✓ Connected to "${metadata.title}"`;
+	const folderState = vault.exists ? "exists" : "does not exist";
+	const folder = `✓ Vault folder \`${displayFolderPath(vault.path)}\` ${folderState}, ${vault.markdownFiles} .md files`;
+	return `${connected}\n${folder}\n${directionPreviewLine(direction, metadata.rowCount, vault.markdownFiles)}`;
+}
+
+export function formWarnings(direction: SyncDirection, metadata: DatabaseMetadata | undefined, vault: VaultFolderStats): string[] {
+	const warnings: string[] = [];
+	if (direction === "push" && vault.markdownFiles === 0) {
+		warnings.push(EMPTY_PUSH_WARNING);
+	}
+	if (direction === "pull" && metadata?.rowCount === "0") {
+		warnings.push(EMPTY_PULL_WARNING);
+	}
+	return warnings;
+}
+
+export function shouldConfirmDirectionChange(
+	previousDirection: SyncDirection,
+	nextDirection: SyncDirection,
+	lastSyncedAt: string | null
+): boolean {
+	return Boolean(lastSyncedAt && previousDirection !== nextDirection);
+}
+
 /**
  * Fetches display metadata for a Notion database without throwing UI-facing errors.
  */
@@ -85,6 +160,21 @@ export async function fetchDatabaseMetadata(
 	} catch (err) {
 		return { ok: false, error: truncateError(err) };
 	}
+}
+
+function directionPreviewLine(direction: SyncDirection, rowCount: string | undefined, markdownFiles: number): string {
+	const rows = rowCount ?? "unknown";
+	if (direction === "push") {
+		return `→ With Push selected: this sync will create ${markdownFiles} Notion rows${markdownFiles === 0 ? " (empty vault folder)" : ""}.`;
+	}
+	if (direction === "bidirectional") {
+		return `→ With Bidirectional selected: ${rows} files created, ${markdownFiles} rows pushed${markdownFiles === 0 ? " (vault empty)" : ""}.`;
+	}
+	return `→ With Pull selected: this sync will create ${rows} markdown files.`;
+}
+
+function displayFolderPath(path: string): string {
+	return path.endsWith("/") ? path : `${path}/`;
 }
 
 function extractTitle(database: unknown): string {

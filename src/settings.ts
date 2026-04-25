@@ -1,6 +1,6 @@
-import { App, ButtonComponent, Modal, Notice, PluginSettingTab, Setting } from "obsidian";
+import { App, ButtonComponent, Modal, Notice, PluginSettingTab, Setting, TFile, TFolder, normalizePath } from "obsidian";
 import NotionFreezePlugin from "./main";
-import { SyncedDatabase } from "./types";
+import { SyncDirection, SyncedDatabase } from "./types";
 import { createNotionClient } from "./notion-client";
 import {
 	addDatabase,
@@ -10,10 +10,17 @@ import {
 } from "./settings-data";
 import {
 	DatabaseMetadata,
+	DIRECTION_HELPER,
+	DIRECTION_LABELS,
+	VaultFolderStats,
+	buildConnectionPreview,
 	fetchDatabaseMetadata,
+	formWarnings,
 	parseNotionDbId,
+	shouldConfirmDirectionChange,
 	slugify,
 	trimApiKey,
+	vaultFolderHelper,
 } from "./settings-ux";
 
 interface EditState {
@@ -277,8 +284,14 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 		let nameInput: { setValue(value: string): unknown } | null = null;
 		let outputInput: { setValue(value: string): unknown } | null = null;
 		let testButton: ButtonComponent | null = null;
+		let outputDescEl: HTMLElement | null = null;
+		let previewEl: HTMLElement | null = null;
+		let warningsEl: HTMLElement | null = null;
+		const originalEntry = this.editingId && this.editingId !== "__new__"
+			? this.plugin.settings.databases.find((entry) => entry.id === this.editingId) ?? null
+			: null;
 
-		const save = async () => {
+		const save = async (directionChangeConfirmed = false) => {
 			const databaseId = parseNotionDbId(state.input);
 			if (!databaseId) {
 				state.validationError = "Invalid Notion database URL or ID. Expected a Notion link or a 32-character hex ID.";
@@ -308,6 +321,21 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 					direction: draft.direction ?? "pull",
 					enabled: this.editingId === "__new__" ? true : draft.enabled,
 				});
+				if (
+					originalEntry &&
+					shouldConfirmDirectionChange(originalEntry.direction, entry.direction, originalEntry.lastSyncedAt) &&
+					!directionChangeConfirmed
+				) {
+					new ConfirmDirectionChangeModal(
+						this.app,
+						originalEntry.direction,
+						entry.direction,
+						() => {
+							void save(true);
+						}
+					).open();
+					return;
+				}
 				this.plugin.settings = this.editingId === "__new__"
 					? addDatabase(this.plugin.settings, entry)
 					: updateDatabase(this.plugin.settings, entry);
@@ -387,32 +415,34 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 					})
 			);
 
-		new Setting(wrapper)
-			.setName("Output folder")
-			.setDesc("Vault folder where pulled notes land. Auto-filled as `_relay/<db-name>/` if blank. Relative to vault root.")
-			.addText((text) =>
-				text
-					.setPlaceholder("_relay/")
-					.setValue(draft.outputFolder)
-					.then((t) => {
-						outputInput = t;
-					})
-					.onChange((value) => {
-						draft.outputFolder = value.trim();
-						state.outputTouched = true;
-						state.validationError = undefined;
-					})
-			);
+		const outputSetting = new Setting(wrapper)
+			.setName("Vault folder")
+			.setDesc(vaultFolderHelper(draft.direction ?? "pull"));
+		outputDescEl = outputSetting.descEl;
+		outputSetting.addText((text) =>
+			text
+				.setPlaceholder("_relay/")
+				.setValue(draft.outputFolder)
+				.then((t) => {
+					outputInput = t;
+				})
+				.onChange((value) => {
+					draft.outputFolder = value.trim();
+					state.outputTouched = true;
+					state.validationError = undefined;
+					updateFormUx();
+				})
+		);
 
 		new Setting(wrapper)
 			.setName("Sync direction")
-			.setDesc("Pull = Notion → Obsidian. Push = Obsidian → Notion. Bidirectional = both ways (conflict rules apply, see v0.7+).")
+			.setDesc(DIRECTION_HELPER)
 			.then((setting) => {
 				const group = setting.controlEl.createDiv({ cls: "stonerelay-direction-selector" });
 				for (const option of [
-					{ value: "pull", label: "Pull" },
-					{ value: "push", label: "Push" },
-					{ value: "bidirectional", label: "Bidirectional" },
+					{ value: "pull", label: DIRECTION_LABELS.pull },
+					{ value: "push", label: DIRECTION_LABELS.push },
+					{ value: "bidirectional", label: DIRECTION_LABELS.bidirectional },
 				] as const) {
 					const button = group.createEl("button", {
 						text: option.label,
@@ -425,6 +455,7 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 					button.onClickEvent(() => {
 						draft.direction = option.value;
 						state.validationError = undefined;
+						updateFormUx();
 						this.display();
 					});
 				}
@@ -439,6 +470,9 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 					});
 				updateTestButton();
 			});
+		previewEl = wrapper.createDiv({ cls: "stonerelay-connection-preview" });
+
+		warningsEl = wrapper.createDiv({ cls: "stonerelay-form-warnings" });
 
 		const footer = wrapper.createDiv({ cls: "stonerelay-edit-footer" });
 		new Setting(footer)
@@ -504,6 +538,7 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 				state.message = `Couldn't fetch DB info: ${result.error}`;
 			}
 			renderStatus();
+			updateFormUx();
 			updateTestButton();
 		};
 
@@ -527,6 +562,43 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 		function updateTestButton(): void {
 			testButton?.setDisabled(parseNotionDbId(state.input) === null);
 		}
+
+		const currentVaultStats = (): VaultFolderStats => {
+			return this.getVaultFolderStats(draft.outputFolder.trim() || "_relay/");
+		};
+
+		function updateFormUx(): void {
+			const direction = draft.direction ?? "pull";
+			if (outputDescEl) {
+				outputDescEl.setText(vaultFolderHelper(direction));
+			}
+
+			const vault = currentVaultStats();
+			if (previewEl) {
+				previewEl.empty();
+				if (state.metadata) {
+					previewEl.createEl("pre", {
+						text: buildConnectionPreview({
+							direction,
+							metadata: state.metadata,
+							vault,
+						}),
+					});
+				}
+			}
+
+			if (warningsEl) {
+				warningsEl.empty();
+				for (const warning of formWarnings(direction, state.metadata, vault)) {
+					warningsEl.createEl("div", {
+						cls: "stonerelay-warning-callout",
+						text: warning,
+					});
+				}
+			}
+		}
+
+		updateFormUx();
 	}
 
 	private createEditState(input: string, fetchedTitle: string | null = null): EditState {
@@ -538,6 +610,30 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 			nameTouched: false,
 			outputTouched: false,
 			requestId: 0,
+		};
+	}
+
+	private getVaultFolderStats(folderPath: string): VaultFolderStats {
+		const path = normalizePath(folderPath || "_relay/");
+		const file = this.app.vault.getAbstractFileByPath(path);
+		if (file instanceof TFolder) {
+			return {
+				path,
+				exists: true,
+				markdownFiles: countMarkdownFiles(file),
+			};
+		}
+		if (file instanceof TFile) {
+			return {
+				path,
+				exists: true,
+				markdownFiles: file.extension === "md" ? 1 : 0,
+			};
+		}
+		return {
+			path,
+			exists: false,
+			markdownFiles: 0,
 		};
 	}
 
@@ -624,6 +720,48 @@ class ConfirmRemoveModal extends Modal {
 	}
 }
 
+class ConfirmDirectionChangeModal extends Modal {
+	private previousDirection: SyncDirection;
+	private nextDirection: SyncDirection;
+	private onConfirm: () => void;
+
+	constructor(app: App, previousDirection: SyncDirection, nextDirection: SyncDirection, onConfirm: () => void) {
+		super(app);
+		this.previousDirection = previousDirection;
+		this.nextDirection = nextDirection;
+		this.onConfirm = onConfirm;
+	}
+
+	onOpen(): void {
+		this.contentEl.createEl("h2", {
+			text: "Direction change detected",
+		});
+		this.contentEl.createEl("p", {
+			text: `This entry has been synced before with direction \`${directionName(this.previousDirection)}\`. Changing to \`${directionName(this.nextDirection)}\` may overwrite Notion rows with vault content on the next sync. Continue?`,
+		});
+
+		new Setting(this.contentEl)
+			.addButton((btn) =>
+				btn
+					.setButtonText("Cancel")
+					.onClick(() => this.close())
+			)
+			.addButton((btn) =>
+				btn
+					.setButtonText("Yes, change direction")
+					.setWarning()
+					.onClick(() => {
+						this.close();
+						this.onConfirm();
+					})
+			);
+	}
+
+	onClose(): void {
+		this.contentEl.empty();
+	}
+}
+
 function requiredLabel(text: string): DocumentFragment {
 	const fragment = document.createDocumentFragment();
 	fragment.append(document.createTextNode(`${text} `));
@@ -671,6 +809,20 @@ function relativeTime(iso: string): string {
 
 function truncate(value: string): string {
 	return value.length > 80 ? `${value.slice(0, 77)}...` : value;
+}
+
+function countMarkdownFiles(folder: TFolder): number {
+	return folder.children.reduce((count, child) => {
+		if (child instanceof TFolder) return count + countMarkdownFiles(child);
+		if (child instanceof TFile && child.extension === "md") return count + 1;
+		return count;
+	}, 0);
+}
+
+function directionName(direction: SyncDirection): string {
+	if (direction === "push") return "Push";
+	if (direction === "bidirectional") return "Bidirectional";
+	return "Pull";
 }
 
 function canPush(entry: SyncedDatabase): boolean {

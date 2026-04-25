@@ -90,6 +90,28 @@
 	padding: 8px 10px;
 }
 
+.stonerelay-connection-preview pre {
+	background: var(--background-primary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	color: var(--text-normal);
+	font-family: var(--font-ui-small);
+	font-size: var(--font-ui-small);
+	line-height: 1.5;
+	margin: 6px 0 10px;
+	padding: 10px 12px;
+	white-space: pre-wrap;
+}
+
+.stonerelay-warning-callout {
+	background: var(--background-modifier-form-field);
+	border: 1px solid var(--text-warning);
+	border-radius: 6px;
+	color: var(--text-warning);
+	margin: 8px 0;
+	padding: 8px 10px;
+}
+
 .stonerelay-section-desc {
 	margin-top: 0;
 }
