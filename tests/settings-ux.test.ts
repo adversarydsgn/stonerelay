@@ -6,7 +6,7 @@ import {
 	trimApiKey,
 } from "../src/settings-ux";
 
-const rawId = "00000000000000000000000000000000";
+const rawId = "0123456789abcdef0123456789abcdef";
 
 describe("parseNotionDbId", () => {
 	it("extracts a database ID from Notion URLs", () => {
@@ -15,7 +15,7 @@ describe("parseNotionDbId", () => {
 	});
 
 	it("accepts bare dashed and undashed IDs", () => {
-		expect(parseNotionDbId("00000000-0000-4000-8000-000000000000")).toBe(rawId);
+		expect(parseNotionDbId("01234567-89ab-cdef-0123-456789abcdef")).toBe(rawId);
 		expect(parseNotionDbId(rawId)).toBe(rawId);
 	});
 
