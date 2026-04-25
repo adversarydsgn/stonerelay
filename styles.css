@@ -90,17 +90,36 @@
 	padding: 8px 10px;
 }
 
-.stonerelay-connection-preview pre {
+.stonerelay-connection-preview {
 	background: var(--background-primary);
 	border: 1px solid var(--background-modifier-border);
 	border-radius: 6px;
 	color: var(--text-normal);
-	font-family: var(--font-ui-small);
 	font-size: var(--font-ui-small);
-	line-height: 1.5;
 	margin: 6px 0 10px;
 	padding: 10px 12px;
-	white-space: pre-wrap;
+}
+
+.stonerelay-preview-row {
+	align-items: flex-start;
+	display: flex;
+	gap: 8px;
+	line-height: 1.5;
+}
+
+.stonerelay-preview-row + .stonerelay-preview-row {
+	margin-top: 4px;
+}
+
+.stonerelay-preview-icon {
+	flex: 0 0 auto;
+	font-weight: 600;
+	min-width: 1.2em;
+	text-align: center;
+}
+
+.stonerelay-preview-placeholder {
+	color: var(--text-muted);
 }
 
 .stonerelay-warning-callout {
@@ -116,25 +135,61 @@
 	margin-top: 0;
 }
 
+.stonerelay-direction-section {
+	border-top: 1px solid var(--background-modifier-border);
+	margin-top: 12px;
+	padding-top: 12px;
+}
+
+.stonerelay-section-heading {
+	color: var(--text-normal);
+	font-size: var(--font-ui-medium);
+	font-weight: var(--font-semibold);
+	margin-bottom: 4px;
+}
+
+.stonerelay-direction-section-desc {
+	margin-bottom: 10px;
+}
+
 .stonerelay-direction-selector {
-	display: inline-flex;
-	gap: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	width: 100%;
 }
 
 .stonerelay-direction-option {
-	border-radius: 0;
+	align-items: flex-start;
+	border-radius: 6px;
+	display: flex;
+	gap: 8px;
+	height: auto;
+	justify-content: flex-start;
+	line-height: 1.35;
 	margin: 0;
+	min-height: 34px;
+	padding: 8px 10px;
+	text-align: left;
+	white-space: normal;
+	width: 100%;
 }
 
-.stonerelay-direction-option:first-child {
-	border-radius: 6px 0 0 6px;
+.stonerelay-direction-radio {
+	flex: 0 0 auto;
+	font-size: var(--font-ui-small);
+	line-height: 1.35;
 }
 
-.stonerelay-direction-option:last-child {
-	border-radius: 0 6px 6px 0;
+.stonerelay-direction-label {
+	min-width: 0;
 }
 
 .stonerelay-direction-option.is-active {
 	background: var(--interactive-accent);
 	color: var(--text-on-accent);
+}
+
+.stonerelay-direction-helper {
+	margin-top: 8px;
 }

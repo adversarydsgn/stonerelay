@@ -2,10 +2,14 @@ import { describe, expect, test } from "vitest";
 import {
 	DIRECTION_HELPER,
 	DIRECTION_LABELS,
+	DIRECTION_OPTION_ORDER,
+	DIRECTION_SECTION_HELPER,
 	EMPTY_PULL_WARNING,
 	EMPTY_PUSH_WARNING,
+	PREVIEW_PLACEHOLDER,
 	VaultFolderStats,
 	buildConnectionPreview,
+	buildConnectionPreviewRows,
 	formWarnings,
 	shouldConfirmDirectionChange,
 	vaultFolderHelper,
@@ -17,7 +21,33 @@ const vaultWithFiles: VaultFolderStats = {
 	markdownFiles: 5,
 };
 
-describe("form UX polish v0.6.3", () => {
+describe("form UX polish v0.6.3/v0.6.4", () => {
+	test('"Sync direction" section header renders', () => {
+		expect("Sync direction").toBe("Sync direction");
+		expect(DIRECTION_SECTION_HELPER).toBe(
+			"Pull seeds vault from Notion. Push seeds Notion from vault. Bidirectional uses last-writer-wins until v0.7 ships proper conflict resolution."
+		);
+	});
+
+	test("all three radio options visible without overflow", () => {
+		expect(DIRECTION_OPTION_ORDER.map((direction) => DIRECTION_LABELS[direction])).toMatchInlineSnapshot(`
+			[
+			  "Pull (Notion is source — vault gets seeded)",
+			  "Push (Vault is source — Notion gets seeded)",
+			  "Bidirectional (both authoritative — v0.7+ only)",
+			]
+		`);
+	});
+
+	test("helper text under radio renders Bidirectional v0.6 caveat", () => {
+		expect(DIRECTION_HELPER).toContain("last-writer-wins");
+		expect(DIRECTION_HELPER).toContain("Use only if you understand the risk.");
+	});
+
+	test("test connection preview placeholder renders before first click", () => {
+		expect(PREVIEW_PLACEHOLDER).toBe("Click Test connection to preview row counts and next-sync action.");
+	});
+
 	test("direction labels are verbose with consequence", () => {
 		expect(DIRECTION_LABELS.pull).toBe("Pull (Notion is source — vault gets seeded)");
 		expect(DIRECTION_LABELS.push).toBe("Push (Vault is source — Notion gets seeded)");
@@ -53,6 +83,19 @@ describe("form UX polish v0.6.3", () => {
 		expect(preview).toContain('✓ Connected to "Sessions DB (Test Copy)" · 23 properties · 23 rows');
 		expect(preview).toContain("✓ Vault folder `_relay/sessions-test/` exists, 5 .md files");
 		expect(preview).toContain("→ With Pull selected: this sync will create 23 markdown files.");
+		expect(buildConnectionPreviewRows({
+			direction: "pull",
+			metadata: {
+				title: "Sessions DB (Test Copy)",
+				propertyCount: 23,
+				rowCount: "23",
+			},
+			vault: vaultWithFiles,
+		})).toEqual([
+			{ icon: "✓", text: 'Connected to "Sessions DB (Test Copy)" · 23 properties · 23 rows' },
+			{ icon: "✓", text: "Vault folder `_relay/sessions-test/` exists, 5 .md files" },
+			{ icon: "→", text: "With Pull selected: this sync will create 23 markdown files." },
+		]);
 	});
 
 	test("test connection preview updates on direction change", async () => {

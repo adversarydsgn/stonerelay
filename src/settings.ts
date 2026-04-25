@@ -12,8 +12,11 @@ import {
 	DatabaseMetadata,
 	DIRECTION_HELPER,
 	DIRECTION_LABELS,
+	DIRECTION_OPTION_ORDER,
+	DIRECTION_SECTION_HELPER,
+	PREVIEW_PLACEHOLDER,
 	VaultFolderStats,
-	buildConnectionPreview,
+	buildConnectionPreviewRows,
 	fetchDatabaseMetadata,
 	formWarnings,
 	parseNotionDbId,
@@ -434,32 +437,40 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 				})
 		);
 
-		new Setting(wrapper)
-			.setName("Sync direction")
-			.setDesc(DIRECTION_HELPER)
-			.then((setting) => {
-				const group = setting.controlEl.createDiv({ cls: "stonerelay-direction-selector" });
-				for (const option of [
-					{ value: "pull", label: DIRECTION_LABELS.pull },
-					{ value: "push", label: DIRECTION_LABELS.push },
-					{ value: "bidirectional", label: DIRECTION_LABELS.bidirectional },
-				] as const) {
-					const button = group.createEl("button", {
-						text: option.label,
-						cls: "stonerelay-direction-option",
-					});
-					button.type = "button";
-					if ((draft.direction ?? "pull") === option.value) {
-						button.addClass("is-active");
-					}
-					button.onClickEvent(() => {
-						draft.direction = option.value;
-						state.validationError = undefined;
-						updateFormUx();
-						this.display();
-					});
-				}
+		const directionSection = wrapper.createDiv({ cls: "stonerelay-direction-section" });
+		directionSection.createEl("div", {
+			cls: "stonerelay-section-heading",
+			text: "Sync direction",
+		});
+		directionSection.createEl("div", {
+			cls: "setting-item-description stonerelay-direction-section-desc",
+			text: DIRECTION_SECTION_HELPER,
+		});
+		const group = directionSection.createDiv({ cls: "stonerelay-direction-selector" });
+		for (const option of DIRECTION_OPTION_ORDER) {
+			const button = group.createEl("button", {
+				cls: "stonerelay-direction-option",
 			});
+			button.type = "button";
+			button.createSpan({ cls: "stonerelay-direction-radio", text: (draft.direction ?? "pull") === option ? "●" : "○" });
+			button.createSpan({ cls: "stonerelay-direction-label", text: DIRECTION_LABELS[option] });
+			if ((draft.direction ?? "pull") === option) {
+				button.addClass("is-active");
+				button.ariaPressed = "true";
+			} else {
+				button.ariaPressed = "false";
+			}
+			button.onClickEvent(() => {
+				draft.direction = option;
+				state.validationError = undefined;
+				updateFormUx();
+				this.display();
+			});
+		}
+		directionSection.createEl("div", {
+			cls: "setting-item-description stonerelay-direction-helper",
+			text: DIRECTION_HELPER,
+		});
 
 		new Setting(wrapper)
 			.addButton((btn) => {
@@ -577,13 +588,19 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 			if (previewEl) {
 				previewEl.empty();
 				if (state.metadata) {
-					previewEl.createEl("pre", {
-						text: buildConnectionPreview({
+					for (const row of buildConnectionPreviewRows({
 							direction,
 							metadata: state.metadata,
 							vault,
-						}),
-					});
+						})) {
+						const rowEl = previewEl.createDiv({ cls: "stonerelay-preview-row" });
+						rowEl.createSpan({ cls: "stonerelay-preview-icon", text: row.icon });
+						rowEl.createSpan({ cls: "stonerelay-preview-text", text: row.text });
+					}
+				} else {
+					const placeholder = previewEl.createDiv({ cls: "stonerelay-preview-row stonerelay-preview-placeholder" });
+					placeholder.createSpan({ cls: "stonerelay-preview-icon", text: "→" });
+					placeholder.createSpan({ cls: "stonerelay-preview-text", text: PREVIEW_PLACEHOLDER });
 				}
 			}
 

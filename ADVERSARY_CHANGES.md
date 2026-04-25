@@ -2,6 +2,25 @@
 
 Fork-side changes to `stonerelay` (vs. upstream `ran-codes/obsidian-notion-database-sync`).
 
+## v0.6.4 — 2026-04-25
+
+Fixes the v0.6.3 form layout so the new direction copy and preview controls are visible at modal width.
+
+**Form layout behavior:**
+
+| Area | Change |
+|---|---|
+| Sync direction section | Restores a visible `Sync direction` heading with direction consequence helper text |
+| Direction options | Stacks Pull, Push, and Bidirectional vertically so verbose labels do not clip |
+| Direction caveat | Renders the v0.6 last-writer-wins warning immediately under the radio stack |
+| Preview area | Shows an inactive Test connection placeholder before the first click |
+| Preview rows | Renders connection, vault count, and next-sync action as distinct rows below Test connection |
+| Vault folder helper | Keeps the v0.6.3 direction-aware helper text wired to radio changes |
+
+**Behavior notes:**
+- Layout-only release: no schema changes and no changes to sync execution logic.
+- Forbidden sync-related files remained untouched.
+
 ## v0.6.3 — 2026-04-25
 
 Polishes the Add/Edit Database form so sync direction consequences are visible before saving.

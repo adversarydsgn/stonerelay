@@ -14,8 +14,16 @@ export const DIRECTION_LABELS: Record<SyncDirection, string> = {
 	bidirectional: "Bidirectional (both authoritative — v0.7+ only)",
 };
 
+export const DIRECTION_OPTION_ORDER: SyncDirection[] = ["pull", "push", "bidirectional"];
+
+export const DIRECTION_SECTION_HELPER =
+	"Pull seeds vault from Notion. Push seeds Notion from vault. Bidirectional uses last-writer-wins until v0.7 ships proper conflict resolution.";
+
 export const DIRECTION_HELPER =
 	"Bidirectional uses last-writer-wins until v0.7 ships proper conflict resolution. Use only if you understand the risk.";
+
+export const PREVIEW_PLACEHOLDER =
+	"Click Test connection to preview row counts and next-sync action.";
 
 export const EMPTY_PUSH_WARNING =
 	"⚠️ Vault folder is empty. A Push will not create any Notion rows. Did you mean Pull?";
@@ -33,6 +41,11 @@ export interface ConnectionPreviewInput {
 	direction: SyncDirection;
 	metadata: DatabaseMetadata;
 	vault: VaultFolderStats;
+}
+
+export interface PreviewRow {
+	icon: "✓" | "⚠" | "→";
+	text: string;
 }
 
 export type FetchDatabaseMetadataResult =
@@ -91,6 +104,12 @@ export function vaultFolderHelper(direction: SyncDirection): string {
 }
 
 export function buildConnectionPreview(input: ConnectionPreviewInput): string {
+	return buildConnectionPreviewRows(input)
+		.map((row) => `${row.icon} ${row.text}`)
+		.join("\n");
+}
+
+export function buildConnectionPreviewRows(input: ConnectionPreviewInput): PreviewRow[] {
 	const { direction, metadata, vault } = input;
 	const details: string[] = [];
 	if (metadata.propertyCount !== undefined) {
@@ -104,8 +123,12 @@ export function buildConnectionPreview(input: ConnectionPreviewInput): string {
 		? `✓ Connected to "${metadata.title}" · ${details.join(" · ")}`
 		: `✓ Connected to "${metadata.title}"`;
 	const folderState = vault.exists ? "exists" : "does not exist";
-	const folder = `✓ Vault folder \`${displayFolderPath(vault.path)}\` ${folderState}, ${vault.markdownFiles} .md files`;
-	return `${connected}\n${folder}\n${directionPreviewLine(direction, metadata.rowCount, vault.markdownFiles)}`;
+	const folder = `Vault folder \`${displayFolderPath(vault.path)}\` ${folderState}, ${vault.markdownFiles} .md files`;
+	return [
+		{ icon: "✓", text: connected.slice(2) },
+		{ icon: vault.exists ? "✓" : "⚠", text: folder },
+		{ icon: "→", text: directionPreviewLine(direction, metadata.rowCount, vault.markdownFiles) },
+	];
 }
 
 export function formWarnings(direction: SyncDirection, metadata: DatabaseMetadata | undefined, vault: VaultFolderStats): string[] {
@@ -165,12 +188,12 @@ export async function fetchDatabaseMetadata(
 function directionPreviewLine(direction: SyncDirection, rowCount: string | undefined, markdownFiles: number): string {
 	const rows = rowCount ?? "unknown";
 	if (direction === "push") {
-		return `→ With Push selected: this sync will create ${markdownFiles} Notion rows${markdownFiles === 0 ? " (empty vault folder)" : ""}.`;
+		return `With Push selected: this sync will create ${markdownFiles} Notion rows${markdownFiles === 0 ? " (empty vault folder)" : ""}.`;
 	}
 	if (direction === "bidirectional") {
-		return `→ With Bidirectional selected: ${rows} files created, ${markdownFiles} rows pushed${markdownFiles === 0 ? " (vault empty)" : ""}.`;
+		return `With Bidirectional selected: ${rows} files created, ${markdownFiles} rows pushed${markdownFiles === 0 ? " (vault empty)" : ""}.`;
 	}
-	return `→ With Pull selected: this sync will create ${rows} markdown files.`;
+	return `With Pull selected: this sync will create ${rows} markdown files.`;
 }
 
 function displayFolderPath(path: string): string {
