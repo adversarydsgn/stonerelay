@@ -96,7 +96,7 @@ export default class NotionFreezePlugin extends Plugin {
 		}).open();
 	}
 
-	private async syncOneConfiguredDatabase(entry: SyncedDatabase): Promise<void> {
+	async syncOneConfiguredDatabase(entry: SyncedDatabase): Promise<void> {
 		try {
 			new Notice(`Syncing ${entry.name}...`);
 			await this.syncConfiguredDatabase(entry, resolveOutputFolder(this.settings, entry));

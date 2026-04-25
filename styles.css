@@ -6,8 +6,90 @@
 	color: var(--text-error);
 }
 
+.stonerelay-sync-error-toggle {
+	background: transparent;
+	border: 0;
+	box-shadow: none;
+	cursor: pointer;
+	font: inherit;
+	height: auto;
+	padding: 0;
+	text-align: left;
+}
+
+.stonerelay-sync-error-detail {
+	background: var(--background-secondary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	color: var(--text-error);
+	margin: 0 0 12px;
+	overflow-x: auto;
+	padding: 10px 12px;
+	white-space: pre-wrap;
+}
+
 .stonerelay-database-edit {
+	background: var(--background-secondary);
+	border: 1px solid var(--background-modifier-border);
 	border-left: 2px solid var(--interactive-accent);
 	margin: 8px 0 12px;
-	padding-left: 12px;
+	border-radius: 6px;
+	padding: 12px 16px;
+}
+
+.stonerelay-edit-divider {
+	margin: 16px 0;
+}
+
+.stonerelay-edit-footer {
+	border-top: 1px solid var(--background-modifier-border);
+	margin-top: 16px;
+	padding-top: 12px;
+}
+
+.stonerelay-edit-footer .setting-item {
+	border-top: 0;
+	padding: 0;
+}
+
+.stonerelay-edit-footer .setting-item-control {
+	justify-content: flex-end;
+	width: 100%;
+}
+
+.stonerelay-required {
+	color: var(--text-error);
+}
+
+.stonerelay-inline-status {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	margin: 4px 0 8px;
+	min-height: 1.4em;
+}
+
+.stonerelay-success {
+	color: var(--text-success);
+}
+
+.stonerelay-error {
+	color: var(--text-error);
+}
+
+.stonerelay-fetching {
+	color: var(--text-accent);
+}
+
+.stonerelay-notice,
+.stonerelay-api-key-notice {
+	background: var(--background-modifier-form-field);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	color: var(--text-warning);
+	margin: 8px 0;
+	padding: 8px 10px;
+}
+
+.stonerelay-section-desc {
+	margin-top: 0;
 }

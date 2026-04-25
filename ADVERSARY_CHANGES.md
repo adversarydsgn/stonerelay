@@ -2,6 +2,25 @@
 
 Fork-side changes to `stonerelay` (vs. upstream `ran-codes/obsidian-notion-database-sync`).
 
+## v0.4.0-adv — 2026-04-25
+
+Polishes the persisted database settings flow so users can paste a Notion URL or ID, fetch metadata, review the auto-filled label/folder, and save.
+
+**New settings UX behavior:**
+
+| Area | Change |
+|---|---|
+| Add/edit card | Replaces manual database ID entry with `Notion URL or ID *`, inline fetch status, metadata preview, and contained card styling |
+| Auto-fill | Fetches Notion title/property/row metadata, fills Name, and defaults Output folder to `_relay/<slug>/` |
+| Validation | Accepts Notion URLs plus dashed or undashed IDs, trims API keys on paste/blur, and rejects output-folder traversal |
+| Row actions | Moves Enabled to the static row, adds per-row `Sync now`, `Open in Notion`, and expandable sync-error detail |
+| Helper text | Adds label descriptions, friendly empty state, API-key notice, and footer-aligned Save/Cancel buttons |
+
+**Behavior notes:**
+- Existing v0.3.0-adv persisted database entries migrate and render in the new row UI without data loss.
+- Sync All and Sync One commands continue to use the existing v0.3.0 sync path.
+- Row counts in the metadata preview are estimated from the first 100 Notion query results and display `100+` when more rows exist.
+
 ## v0.3.0-adv — 2026-04-25
 
 Adds a persisted Notion database list and batch sync flow.

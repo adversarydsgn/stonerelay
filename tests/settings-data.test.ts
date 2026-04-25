@@ -51,7 +51,10 @@ describe("settings data migration", () => {
 		const migrated = migrateData(settings([db]));
 
 		expect(migrated.databases).toHaveLength(1);
-		expect(migrated.databases[0]).toEqual(db);
+		expect(migrated.databases[0]).toEqual({
+			...db,
+			databaseId: rawId,
+		});
 		expect(migrated.schemaVersion).toBe(2);
 	});
 });
@@ -66,7 +69,7 @@ describe("database list operations", () => {
 
 		expect(updated.databases).toHaveLength(1);
 		expect(updated.databases[0].id).toBeTruthy();
-		expect(updated.databases[0].databaseId).toBe(dashedId);
+		expect(updated.databases[0].databaseId).toBe(rawId);
 	});
 
 	it("removeDatabase removes by id and no-ops on unknown id", () => {

@@ -1,7 +1,7 @@
 import { DEFAULT_SETTINGS, NotionFreezeSettings, SyncedDatabase } from "./types";
 
 export type DatabaseInput = Partial<SyncedDatabase> & {
-	name: string;
+	name?: string;
 	databaseId: string;
 };
 
@@ -154,11 +154,5 @@ function normalizeDatabaseId(input: string): string {
 	if (!/^[a-f0-9]{32}$/i.test(hex)) {
 		throw new Error(`Invalid Notion ID: ${input}`);
 	}
-	return [
-		hex.slice(0, 8),
-		hex.slice(8, 12),
-		hex.slice(12, 16),
-		hex.slice(16, 20),
-		hex.slice(20, 32),
-	].join("-");
+	return hex.toLowerCase();
 }

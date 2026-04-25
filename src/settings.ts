@@ -1,18 +1,41 @@
-import { App, Modal, Notice, PluginSettingTab, Setting } from "obsidian";
+import { App, ButtonComponent, Modal, Notice, PluginSettingTab, Setting } from "obsidian";
 import NotionFreezePlugin from "./main";
 import { SyncedDatabase } from "./types";
+import { createNotionClient } from "./notion-client";
 import {
 	addDatabase,
 	createDatabaseEntry,
 	removeDatabase,
 	updateDatabase,
 } from "./settings-data";
+import {
+	DatabaseMetadata,
+	fetchDatabaseMetadata,
+	parseNotionDbId,
+	slugify,
+	trimApiKey,
+} from "./settings-ux";
+
+interface EditState {
+	input: string;
+	fetchedTitle: string | null;
+	status: "idle" | "fetching" | "success" | "error" | "notice";
+	message: string;
+	metadata?: DatabaseMetadata;
+	validationError?: string;
+	nameTouched: boolean;
+	outputTouched: boolean;
+	requestId: number;
+}
 
 export class NotionFreezeSettingTab extends PluginSettingTab {
 	plugin: NotionFreezePlugin;
 	private editingId: string | null = null;
 	private draft: SyncedDatabase | null = null;
+	private editState: EditState | null = null;
 	private registeredRefresh = false;
+	private expandedErrorIds = new Set<string>();
+	private syncingIds = new Set<string>();
 
 	constructor(app: App, plugin: NotionFreezePlugin) {
 		super(app, plugin);
@@ -42,10 +65,22 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 					.then((t) => {
 						t.inputEl.type = "password";
 						t.inputEl.addClass("notion-sync-input-wide");
+						t.inputEl.addEventListener("paste", () => {
+							setTimeout(() => {
+								const trimmed = trimApiKey(t.inputEl.value);
+								t.setValue(trimmed);
+								void this.saveApiKey(trimmed);
+							});
+						});
+						t.inputEl.addEventListener("blur", () => {
+							const trimmed = trimApiKey(t.inputEl.value);
+							t.setValue(trimmed);
+							void this.saveApiKey(trimmed);
+						});
 					})
-					.onChange(async (value) => {
-						this.plugin.settings.apiKey = value.trim();
-						await this.plugin.saveSettings();
+					.onChange((value) => {
+						this.plugin.settings.apiKey = trimApiKey(value);
+						void this.plugin.saveSettings();
 					})
 			);
 
@@ -63,10 +98,21 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 			);
 
 		containerEl.createEl("h3", { text: "Synced databases" });
+		if (!this.plugin.settings.apiKey) {
+			containerEl.createEl("div", {
+				cls: "stonerelay-api-key-notice",
+				text: "⚠ Set your Notion API key above before adding databases.",
+			});
+		}
+		containerEl.createEl("p", {
+			cls: "setting-item-description stonerelay-section-desc",
+			text: "Notion databases that get synced when you run \"Sync all enabled databases\" or \"Sync one database\". Add a database below.",
+		});
 
 		if (this.plugin.settings.databases.length === 0 && !this.draft) {
 			containerEl.createEl("p", {
-				text: "No databases configured. Click \"Add database\" to start.",
+				cls: "setting-item-description",
+				text: "No databases configured yet. Click \"Add database\" below to start, or paste a Notion link from any database you want to mirror locally.",
 			});
 		}
 
@@ -80,6 +126,10 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 
 		if (this.editingId === "__new__" && this.draft) {
 			this.renderEditRow(containerEl, this.draft);
+		}
+
+		if (this.draft) {
+			containerEl.createEl("hr", { cls: "stonerelay-edit-divider" });
 		}
 
 		new Setting(containerEl)
@@ -97,6 +147,7 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 							lastSyncedAt: null,
 							lastSyncStatus: "never",
 						};
+						this.editState = this.createEditState("");
 						this.display();
 					})
 			)
@@ -113,12 +164,18 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 			});
 	}
 
+	private async saveApiKey(value: string): Promise<void> {
+		if (this.plugin.settings.apiKey === value) return;
+		this.plugin.settings.apiKey = value;
+		await this.plugin.saveSettings();
+	}
+
 	private renderDatabaseRow(containerEl: HTMLElement, entry: SyncedDatabase): void {
 		const desc = document.createDocumentFragment();
 		desc.append(document.createTextNode(`${entry.databaseId}  ·  ${entry.outputFolder || "Default folder"}  ·  `));
-		desc.appendChild(formatLastSync(entry));
+		desc.appendChild(this.formatLastSync(entry));
 
-		new Setting(containerEl)
+		const setting = new Setting(containerEl)
 			.setName(entry.name)
 			.setDesc(desc)
 			.addToggle((toggle) =>
@@ -132,13 +189,38 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 						this.display();
 					})
-			)
+			);
+
+		if (this.syncingIds.has(entry.id)) {
+			setting.controlEl.createSpan({
+				cls: "stonerelay-inline-status stonerelay-fetching",
+				text: "Syncing...",
+			});
+		} else {
+			setting.addButton((btn) =>
+				btn
+					.setButtonText("Sync now")
+					.onClick(() => {
+						void this.syncRow(entry);
+					})
+			);
+		}
+
+		setting
+			.addButton((btn) => {
+				btn.setIcon("external-link").onClick(() => {
+					window.open(`https://www.notion.so/${entry.databaseId}`, "_blank");
+				});
+				btn.buttonEl.title = "Open in Notion";
+				btn.buttonEl.ariaLabel = "Open in Notion";
+			})
 			.addButton((btn) =>
 				btn
 					.setButtonText("Edit")
 					.onClick(() => {
 						this.editingId = entry.id;
 						this.draft = { ...entry };
+						this.editState = this.createEditState(entry.databaseId, entry.name);
 						this.display();
 					})
 			)
@@ -151,88 +233,300 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 							await this.plugin.saveSettings();
 							this.editingId = null;
 							this.draft = null;
+							this.editState = null;
 							this.display();
 						}).open();
 					})
 			);
+
+		if (entry.lastSyncStatus === "error" && this.expandedErrorIds.has(entry.id)) {
+			containerEl.createEl("pre", {
+				cls: "stonerelay-sync-error-detail",
+				text: entry.lastSyncError || "Sync failed",
+			});
+		}
 	}
 
 	private renderEditRow(containerEl: HTMLElement, draft: SyncedDatabase): void {
+		const state = this.editState ?? this.createEditState(draft.databaseId, draft.name);
+		this.editState = state;
 		const wrapper = containerEl.createDiv({ cls: "stonerelay-database-edit" });
+		let statusEl: HTMLElement;
+		let nameInput: { setValue(value: string): unknown } | null = null;
+		let outputInput: { setValue(value: string): unknown } | null = null;
+		let testButton: ButtonComponent | null = null;
+
+		const save = async () => {
+			const databaseId = parseNotionDbId(state.input);
+			if (!databaseId) {
+				state.validationError = "Invalid Notion database URL or ID. Expected a Notion link or a 32-character hex ID.";
+				this.display();
+				return;
+			}
+
+			const finalName = draft.name.trim() || state.fetchedTitle || "";
+			const finalOutput = draft.outputFolder.trim() || "_relay/";
+			if (!finalName) {
+				state.validationError = "Name is required when DB info has not been fetched from Notion.";
+				this.display();
+				return;
+			}
+			if (!isValidRelativePath(finalOutput)) {
+				state.validationError = "Output folder must be a relative vault path without ../ traversal.";
+				this.display();
+				return;
+			}
+
+			try {
+				const entry = createDatabaseEntry({
+					...draft,
+					name: finalName,
+					databaseId,
+					outputFolder: finalOutput,
+					enabled: this.editingId === "__new__" ? true : draft.enabled,
+				});
+				this.plugin.settings = this.editingId === "__new__"
+					? addDatabase(this.plugin.settings, entry)
+					: updateDatabase(this.plugin.settings, entry);
+				await this.plugin.saveSettings();
+				this.editingId = null;
+				this.draft = null;
+				this.editState = null;
+				this.display();
+			} catch (err) {
+				state.validationError = err instanceof Error ? err.message : String(err);
+				this.display();
+			}
+		};
+		const cancel = () => {
+			this.editingId = null;
+			this.draft = null;
+			this.editState = null;
+			this.display();
+		};
+
+		wrapper.addEventListener("keydown", (event) => {
+			if (event.key === "Enter" && event.target instanceof HTMLInputElement) {
+				event.preventDefault();
+				void save();
+			}
+			if (event.key === "Escape") {
+				event.preventDefault();
+				cancel();
+			}
+		});
+
+		new Setting(wrapper)
+			.setName(requiredLabel("Notion URL or ID"))
+			.setDesc("Paste the Notion database link, or just the 32-character ID. We'll fetch the rest from Notion.")
+			.addText((text) =>
+				text
+					.setPlaceholder("https://www.notion.so/... or 00000000000000000000000000000000")
+					.setValue(state.input)
+					.then((t) => {
+						t.inputEl.addClass("notion-sync-input-wide");
+						t.inputEl.addEventListener("paste", () => {
+							setTimeout(() => {
+								state.input = t.inputEl.value.trim();
+								void runMetadataFetch("auto");
+							});
+						});
+						t.inputEl.addEventListener("blur", () => {
+							state.input = t.inputEl.value.trim();
+							void runMetadataFetch("auto");
+						});
+					})
+					.onChange((value) => {
+						state.input = value.trim();
+						draft.databaseId = value.trim();
+						state.validationError = undefined;
+						updateTestButton();
+					})
+			);
+
+		statusEl = wrapper.createDiv({ cls: "stonerelay-inline-status" });
+		renderStatus();
 
 		new Setting(wrapper)
 			.setName("Name")
+			.setDesc("A human label for this database. Auto-filled from Notion if blank.")
 			.addText((text) =>
 				text
 					.setPlaceholder("Sessions Mirror")
 					.setValue(draft.name)
+					.then((t) => {
+						nameInput = t;
+					})
 					.onChange((value) => {
 						draft.name = value;
-					})
-			);
-
-		new Setting(wrapper)
-			.setName("Database ID")
-			.addText((text) =>
-				text
-					.setPlaceholder("5123456789ab4def8123456789abcdef")
-					.setValue(draft.databaseId)
-					.then((t) => t.inputEl.addClass("notion-sync-input-wide"))
-					.onChange((value) => {
-						draft.databaseId = value.trim();
+						state.nameTouched = true;
+						state.validationError = undefined;
 					})
 			);
 
 		new Setting(wrapper)
 			.setName("Output folder")
+			.setDesc("Vault folder where pulled notes land. Auto-filled as `_relay/<db-name>/` if blank. Relative to vault root.")
 			.addText((text) =>
 				text
-					.setPlaceholder(this.plugin.settings.defaultOutputFolder || "_relay")
+					.setPlaceholder("_relay/")
 					.setValue(draft.outputFolder)
+					.then((t) => {
+						outputInput = t;
+					})
 					.onChange((value) => {
 						draft.outputFolder = value.trim();
+						state.outputTouched = true;
+						state.validationError = undefined;
 					})
 			);
 
 		new Setting(wrapper)
-			.setName("Enabled")
-			.addToggle((toggle) =>
-				toggle
-					.setValue(draft.enabled)
-					.onChange((value) => {
-						draft.enabled = value;
-					})
-			);
+			.addButton((btn) => {
+				testButton = btn
+					.setButtonText("Test connection")
+					.onClick(() => {
+						void runMetadataFetch("test");
+					});
+				updateTestButton();
+			});
 
-		new Setting(wrapper)
+		const footer = wrapper.createDiv({ cls: "stonerelay-edit-footer" });
+		new Setting(footer)
+			.addButton((btn) =>
+				btn
+					.setButtonText("Cancel")
+					.onClick(cancel)
+			)
 			.addButton((btn) =>
 				btn
 					.setButtonText("Save")
 					.setCta()
-					.onClick(async () => {
-						try {
-							const entry = createDatabaseEntry(draft);
-							this.plugin.settings = this.editingId === "__new__"
-								? addDatabase(this.plugin.settings, entry)
-								: updateDatabase(this.plugin.settings, entry);
-							await this.plugin.saveSettings();
-							this.editingId = null;
-							this.draft = null;
-							this.display();
-						} catch (err) {
-							new Notice(err instanceof Error ? err.message : String(err));
-						}
-					})
-			)
-			.addButton((btn) =>
-				btn
-					.setButtonText("Cancel")
 					.onClick(() => {
-						this.editingId = null;
-						this.draft = null;
-						this.display();
+						void save();
 					})
 			);
+
+		const runMetadataFetch = async (mode: "auto" | "test") => {
+			const databaseId = parseNotionDbId(state.input);
+			state.validationError = undefined;
+			if (!databaseId) {
+				state.status = "error";
+				state.message = "Invalid Notion database URL or ID. Expected a Notion link or a 32-character hex ID.";
+				renderStatus();
+				updateTestButton();
+				return;
+			}
+			draft.databaseId = databaseId;
+			if (!this.plugin.settings.apiKey) {
+				state.status = "notice";
+				state.message = "Set Notion API key above to auto-fill DB info.";
+				renderStatus();
+				updateTestButton();
+				return;
+			}
+
+			const requestId = ++state.requestId;
+			state.status = "fetching";
+			state.message = "Fetching from Notion…";
+			renderStatus();
+			updateTestButton();
+
+			const client = createNotionClient(this.plugin.settings.apiKey);
+			const result = await fetchDatabaseMetadata(databaseId, client);
+			if (requestId !== state.requestId) return;
+
+			if (result.ok) {
+				state.status = "success";
+				state.metadata = result.metadata;
+				state.fetchedTitle = result.metadata.title;
+				state.message = metadataMessage(result.metadata, mode === "test");
+				if (!state.nameTouched && !draft.name.trim()) {
+					draft.name = result.metadata.title;
+					nameInput?.setValue(draft.name);
+				}
+				if (!state.outputTouched && !draft.outputFolder.trim()) {
+					const slug = slugify(result.metadata.title) || "database";
+					draft.outputFolder = `_relay/${slug}/`;
+					outputInput?.setValue(draft.outputFolder);
+				}
+			} else {
+				state.status = "error";
+				state.message = `Couldn't fetch DB info: ${result.error}`;
+			}
+			renderStatus();
+			updateTestButton();
+		};
+
+		function renderStatus(): void {
+			statusEl.empty();
+			if (state.validationError) {
+				statusEl.addClass("stonerelay-error");
+				statusEl.removeClass("stonerelay-success", "stonerelay-fetching", "stonerelay-notice");
+				statusEl.setText(state.validationError);
+				return;
+			}
+			statusEl.removeClass("stonerelay-error", "stonerelay-success", "stonerelay-fetching", "stonerelay-notice");
+			if (state.status === "idle") return;
+			statusEl.addClass(`stonerelay-${state.status}`);
+			statusEl.setText(state.message);
+			if (state.metadata?.rowCountApproximate) {
+				statusEl.title = "Row count is estimated from the first 100 queried rows.";
+			}
+		}
+
+		function updateTestButton(): void {
+			testButton?.setDisabled(parseNotionDbId(state.input) === null);
+		}
+	}
+
+	private createEditState(input: string, fetchedTitle: string | null = null): EditState {
+		return {
+			input,
+			fetchedTitle,
+			status: "idle",
+			message: "",
+			nameTouched: false,
+			outputTouched: false,
+			requestId: 0,
+		};
+	}
+
+	private async syncRow(entry: SyncedDatabase): Promise<void> {
+		this.syncingIds.add(entry.id);
+		this.display();
+		await this.plugin.syncOneConfiguredDatabase(entry);
+		this.syncingIds.delete(entry.id);
+		this.display();
+	}
+
+	private formatLastSync(entry: SyncedDatabase): HTMLElement {
+		if (entry.lastSyncStatus === "error") {
+			const el = document.createElement("button");
+			el.type = "button";
+			el.setText(`Error: ${truncate(entry.lastSyncError || "Sync failed")}`);
+			el.addClass("stonerelay-sync-error");
+			el.addClass("stonerelay-sync-error-toggle");
+			el.onClickEvent(() => {
+				if (this.expandedErrorIds.has(entry.id)) {
+					this.expandedErrorIds.delete(entry.id);
+				} else {
+					this.expandedErrorIds.add(entry.id);
+				}
+				this.display();
+			});
+			return el;
+		}
+
+		const el = document.createElement("span");
+		if (!entry.lastSyncedAt) {
+			el.setText("Never synced");
+			return el;
+		}
+
+		el.setText(relativeTime(entry.lastSyncedAt));
+		el.title = entry.lastSyncedAt;
+		return el;
 	}
 }
 
@@ -273,22 +567,32 @@ class ConfirmRemoveModal extends Modal {
 	}
 }
 
-function formatLastSync(entry: SyncedDatabase): HTMLElement {
-	const el = document.createElement("span");
-	if (entry.lastSyncStatus === "error") {
-		el.setText(`Error: ${truncate(entry.lastSyncError || "Sync failed")}`);
-		el.addClass("stonerelay-sync-error");
-		return el;
-	}
+function requiredLabel(text: string): DocumentFragment {
+	const fragment = document.createDocumentFragment();
+	fragment.append(document.createTextNode(`${text} `));
+	const asterisk = document.createElement("span");
+	asterisk.addClass("stonerelay-required");
+	asterisk.title = "Required";
+	asterisk.setText("*");
+	fragment.appendChild(asterisk);
+	return fragment;
+}
 
-	if (!entry.lastSyncedAt) {
-		el.setText("Never synced");
-		return el;
+function metadataMessage(metadata: DatabaseMetadata, tested: boolean): string {
+	const prefix = tested ? `✓ Connection OK: "${metadata.title}"` : `✓ Connected to "${metadata.title}"`;
+	const details: string[] = [];
+	if (metadata.propertyCount !== undefined) {
+		details.push(`${metadata.propertyCount} properties`);
 	}
+	if (metadata.rowCount !== undefined) {
+		details.push(`${metadata.rowCount} rows`);
+	}
+	return details.length > 0 ? `${prefix} · ${details.join(" · ")}` : prefix;
+}
 
-	el.setText(relativeTime(entry.lastSyncedAt));
-	el.title = entry.lastSyncedAt;
-	return el;
+function isValidRelativePath(path: string): boolean {
+	if (!path || path.startsWith("/") || path.includes("\\")) return false;
+	return path.split("/").every((part) => part !== "..");
 }
 
 function relativeTime(iso: string): string {
