@@ -1,10 +1,10 @@
 {
 	"id": "stonerelay",
 	"name": "Stonerelay",
-	"version": "0.6.0",
+	"version": "0.6.2",
 	"minAppVersion": "1.0.0",
-	"description": "Sync Notion databases and pages into your vault as Markdown. | Adversary fork by adversary.design — extends with bidirectional sync, custom property mappings, Obsidian-native pull patterns. Forked from ran-codes/obsidian-notion-database-sync (MIT license).",
-	"author": "Adversary (adversary.design)",
+	"description": "Sync Notion databases and pages into your vault as Markdown. | adversary fork by adversary.design — extends with bidirectional sync, custom property mappings, Obsidian-native pull patterns. Forked from ran-codes/obsidian-notion-database-sync (MIT license).",
+	"author": "adversary (adversary.design)",
 	"authorUrl": "https://adversary.design",
 	"isDesktopOnly": false
 }

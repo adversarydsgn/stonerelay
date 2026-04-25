@@ -1,6 +1,6 @@
 # Stonerelay
 
-Adversary's pull-path tool for Notion → Obsidian sync.
+adversary's pull-path tool for Notion → Obsidian sync.
 
 **Forked from [ran-codes/obsidian-notion-database-sync](https://github.com/ran-codes/obsidian-notion-database-sync)**, MIT licensed. Extending with [planned: bidirectional sync, custom property mappings, etc.].
 
@@ -59,6 +59,14 @@ Notion/
 ```
 
 Each synced file includes frontmatter with `notion-id`, `notion-url`, `notion-frozen-at`, and `notion-last-edited` for tracking.
+
+## Timestamp preservation
+
+Stonerelay preserves user-set Notion date properties through Notion → vault → Notion round-trips. Date-only values, date ranges, datetime strings, empty dates, and date objects with `time_zone` are serialized back to the Notion date payload shape.
+
+Notion-managed `Created time` is preserved when a push updates the original row matched by `notion-id`. If a frontmatter `notion-id` no longer exists in the target database, stonerelay emits a warning and skips that file instead of silently creating a duplicate row with a new Created time.
+
+Notion-managed `Last edited time` is not preservable. Notion updates it on every successful page update, so pushes should be expected to bump that timestamp.
 
 ## License
 

@@ -128,9 +128,15 @@ function mapPropertiesToFrontmatter(
 				break;
 			case "date":
 				if (prop.date) {
-					frontmatter[key] = prop.date.end
-						? `${prop.date.start} → ${prop.date.end}`
-						: prop.date.start;
+					frontmatter[key] = prop.date.time_zone
+						? {
+							start: prop.date.start,
+							end: prop.date.end,
+							time_zone: prop.date.time_zone,
+						}
+						: prop.date.end
+							? `${prop.date.start} → ${prop.date.end}`
+							: prop.date.start;
 				} else {
 					frontmatter[key] = null;
 				}

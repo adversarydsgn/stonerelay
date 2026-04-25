@@ -40,6 +40,12 @@ interface ExistingPage {
 	title: string;
 }
 
+interface NotionDateValue {
+	start?: unknown;
+	end?: unknown;
+	time_zone?: unknown;
+}
+
 export async function pushDatabase(
 	app: App,
 	client: Client,
@@ -61,7 +67,7 @@ export async function pushDatabase(
 	const docs = await readMarkdownDocuments(app, sourceFolder, titlePropName);
 	const existingPages = await queryAllPages(client, dataSourceId, titlePropName);
 	const byTitle = new Map(existingPages.map((page) => [page.title, page.id]));
-	const byId = new Map(existingPages.map((page) => [page.id, page.id]));
+	const byId = new Map(existingPages.flatMap((page) => notionIdKeys(page.id).map((key) => [key, page.id])));
 	const ctx: PushContext = {
 		titleToPageId: byTitle,
 		titleToNotionId: new Map(),
@@ -72,29 +78,45 @@ export async function pushDatabase(
 	let created = 0;
 	let updated = 0;
 	let failed = 0;
+	let skipped = 0;
 	const errors: string[] = [];
 
 	for (const doc of docs) {
 		const notionId = typeof doc.props["notion-id"] === "string" ? doc.props["notion-id"] : null;
-		const existingId = notionId ? byId.get(notionId) ?? notionId : byTitle.get(doc.title);
+		if (notionId && !byId.has(notionId) && !byId.has(compactNotionId(notionId))) {
+			skipped++;
+			ctx.warnings.push(
+				`${doc.file.path}: notion-id ${notionId} was not found in target database; skipped to avoid creating a duplicate.`
+			);
+			continue;
+		}
+
+		const existingId = notionId
+			? byId.get(notionId) ?? byId.get(compactNotionId(notionId))
+			: byTitle.get(doc.title);
 		const properties = buildPageProperties(doc, schema, titlePropName, ctx);
 
 		try {
 			if (existingId) {
-				await notionRequest(() =>
+				const page = await notionRequest(() =>
 					client.pages.update({
 						page_id: existingId,
 						properties,
 					} as never)
 				);
+				await refreshFrontmatterNotionId(app, doc, getReturnedPageId(page) ?? existingId);
 				updated++;
 			} else {
-				await notionRequest(() =>
+				const page = await notionRequest(() =>
 					client.pages.create({
 						parent: { database_id: databaseId },
 						properties,
 					} as never)
 				);
+				const returnedId = getReturnedPageId(page);
+				if (returnedId) {
+					await refreshFrontmatterNotionId(app, doc, returnedId);
+				}
 				created++;
 			}
 		} catch (err) {
@@ -115,7 +137,7 @@ export async function pushDatabase(
 		total: docs.length,
 		created,
 		updated,
-		skipped: 0,
+		skipped,
 		deleted: 0,
 		failed,
 		errors,
@@ -151,6 +173,7 @@ export function frontmatterValueToNotionPayload(
 	value: unknown,
 	ctx: PushContext = emptyPushContext()
 ): Record<string, unknown> | undefined {
+	if (propType === "date") return dateValueToNotionPayload(value);
 	if (value === "" || value === undefined || value === null) return undefined;
 	if (Array.isArray(value) && value.length === 0) return undefined;
 
@@ -180,12 +203,7 @@ export function frontmatterValueToNotionPayload(
 			return name ? { status: { name } } : undefined;
 		}
 		case "date": {
-			const text = String(value).trim();
-			if (!text) return undefined;
-			const [start, end] = text.includes("→")
-				? text.split("→").map((part) => part.trim())
-				: [text, ""];
-			return { date: end ? { start, end } : { start } };
+			return dateValueToNotionPayload(value);
 		}
 		case "checkbox": {
 			const checkbox = typeof value === "boolean"
@@ -407,6 +425,119 @@ function relationIds(
 
 function looksLikeNotionId(value: string): boolean {
 	return /^[a-f0-9-]{32,36}$/i.test(value);
+}
+
+function compactNotionId(value: string): string {
+	return value.replace(/-/g, "").toLowerCase();
+}
+
+function notionIdKeys(value: string): string[] {
+	const compact = compactNotionId(value);
+	return compact === value ? [value] : [value, compact];
+}
+
+function getReturnedPageId(value: unknown): string | null {
+	if (value && typeof value === "object" && "id" in value) {
+		const id = (value as { id?: unknown }).id;
+		return typeof id === "string" && id ? id : null;
+	}
+	return null;
+}
+
+async function refreshFrontmatterNotionId(
+	app: App,
+	doc: MarkdownDocument,
+	notionId: string
+): Promise<void> {
+	if (!notionId || doc.props["notion-id"] === notionId) return;
+	const raw = await app.vault.cachedRead(doc.file);
+	const next = upsertFrontmatterValue(raw, "notion-id", notionId);
+	if (next !== raw) await app.vault.modify(doc.file, next);
+	doc.props["notion-id"] = notionId;
+}
+
+function upsertFrontmatterValue(raw: string, key: string, value: string): string {
+	const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---(\r?\n?[\s\S]*)$/);
+	const escaped = yamlEscapeString(value);
+	if (!match) return `---\n${key}: ${escaped}\n---\n${raw}`;
+
+	const lines = match[1].split(/\r?\n/);
+	const keyPattern = new RegExp(`^("${escapeRegExp(key)}"|${escapeRegExp(key)}):\\s*.*$`);
+	const index = lines.findIndex((line) => keyPattern.test(line));
+	if (index >= 0) {
+		lines[index] = `${key}: ${escaped}`;
+	} else {
+		lines.unshift(`${key}: ${escaped}`);
+	}
+
+	return `---\n${lines.join("\n")}\n---${match[2]}`;
+}
+
+function dateValueToNotionPayload(value: unknown): Record<string, unknown> {
+	if (value === "" || value === undefined || value === null) return { date: null };
+
+	const structured = parseDateObject(value);
+	if (structured) {
+		const start = typeof structured.start === "string" ? structured.start.trim() : "";
+		if (!start) return { date: null };
+		const date: Record<string, string> = { start };
+		if (typeof structured.end === "string" && structured.end.trim()) {
+			date.end = structured.end.trim();
+		}
+		if (typeof structured.time_zone === "string" && structured.time_zone.trim()) {
+			date.time_zone = structured.time_zone.trim();
+		}
+		return { date };
+	}
+
+	const text = String(value).trim();
+	if (!text) return { date: null };
+	const [start, end] = text.includes("→")
+		? text.split("→").map((part) => part.trim())
+		: [text, ""];
+	return { date: end ? { start, end } : { start } };
+}
+
+function parseDateObject(value: unknown): NotionDateValue | null {
+	if (value && typeof value === "object" && !Array.isArray(value)) {
+		return value as NotionDateValue;
+	}
+	if (typeof value !== "string") return null;
+	const text = value.trim();
+	if (!text.startsWith("{") || !text.endsWith("}")) return null;
+	try {
+		const parsed = JSON.parse(text) as unknown;
+		return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+			? parsed as NotionDateValue
+			: null;
+	} catch {
+		return null;
+	}
+}
+
+function yamlEscapeString(str: string): string {
+	if (
+		str.includes(":") ||
+		str.includes("#") ||
+		str.includes("'") ||
+		str.includes('"') ||
+		str.includes("\n") ||
+		str.startsWith(" ") ||
+		str.startsWith("-") ||
+		str.startsWith("[") ||
+		str.startsWith("{") ||
+		str === "true" ||
+		str === "false" ||
+		str === "null" ||
+		/^\d+$/.test(str)
+	) {
+		return `"${str.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n")}"`;
+	}
+	return str;
+}
+
+function escapeRegExp(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function parseScalar(value: string): unknown {

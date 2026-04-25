@@ -95,6 +95,10 @@ describe("pushDatabase integration", () => {
 				getAbstractFileByPath: vi.fn().mockReturnValue(folder),
 				getMarkdownFiles: vi.fn().mockReturnValue(files.map((entry) => entry.file)),
 				cachedRead: vi.fn(async (tfile: TFile) => files.find((entry) => entry.file === tfile)?.content ?? ""),
+				modify: vi.fn(async (tfile: TFile, content: string) => {
+					const entry = files.find((item) => item.file === tfile);
+					if (entry) entry.content = content;
+				}),
 			},
 		};
 		const update = vi.fn().mockResolvedValue({});
@@ -150,6 +154,10 @@ describe("pushDatabase integration", () => {
 				getAbstractFileByPath: vi.fn().mockReturnValue(folder),
 				getMarkdownFiles: vi.fn().mockReturnValue(files.map((entry) => entry.file)),
 				cachedRead: vi.fn(async (tfile: TFile) => files.find((entry) => entry.file === tfile)?.content ?? ""),
+				modify: vi.fn(async (tfile: TFile, content: string) => {
+					const entry = files.find((item) => item.file === tfile);
+					if (entry) entry.content = content;
+				}),
 			},
 		};
 		const client = {
@@ -182,6 +190,48 @@ describe("pushDatabase integration", () => {
 		expect(result.created).toBe(1);
 		expect(result.failed).toBe(1);
 		expect(result.errors[0]).toContain("Notion rejected row");
+	});
+
+	it("skips stale notion-id rows instead of creating duplicates", async () => {
+		const folder = Object.assign(Object.create(TFolder.prototype), { path: "_relay/bugs" });
+		const files = [
+			file("_relay/bugs/stale.md", "---\nnotion-id: missing-page\nStatus: Done\n---\n# Stale"),
+		];
+		const app = {
+			vault: {
+				getAbstractFileByPath: vi.fn().mockReturnValue(folder),
+				getMarkdownFiles: vi.fn().mockReturnValue(files.map((entry) => entry.file)),
+				cachedRead: vi.fn(async (tfile: TFile) => files.find((entry) => entry.file === tfile)?.content ?? ""),
+			},
+		};
+		const client = {
+			databases: {
+				retrieve: vi.fn().mockResolvedValue({
+					title: [richText("Bugs")],
+					data_sources: [{ id: "source-1" }],
+				}),
+			},
+			dataSources: {
+				retrieve: vi.fn().mockResolvedValue({
+					properties: {
+						Name: { type: "title" },
+						Status: { type: "status" },
+					},
+				}),
+				query: vi.fn().mockResolvedValue({ has_more: false, results: [] }),
+			},
+			pages: {
+				update: vi.fn(),
+				create: vi.fn(),
+			},
+		};
+
+		const result = await pushDatabase(app as never, client as never, "db-1", "_relay/bugs");
+
+		expect(client.pages.update).not.toHaveBeenCalled();
+		expect(client.pages.create).not.toHaveBeenCalled();
+		expect(result.skipped).toBe(1);
+		expect(result.errors[0]).toContain("notion-id missing-page was not found");
 	});
 });
 

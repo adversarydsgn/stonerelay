@@ -1,6 +1,25 @@
-# Adversary Changes
+# adversary changes
 
 Fork-side changes to `stonerelay` (vs. upstream `ran-codes/obsidian-notion-database-sync`).
+
+## v0.6.2 — 2026-04-25
+
+Preserves timestamp integrity through Obsidian → Notion push round-trips.
+
+**Timestamp behavior:**
+
+| Area | Change |
+|---|---|
+| User-set dates | Serializes date-only values, date ranges, datetime strings, empty dates, and date objects with `time_zone` back into Notion date payloads |
+| Created time | Keeps Notion-managed Created time intact by updating rows matched by `notion-id` |
+| Last edited time | Documents Notion's expected Last edited time bump on every successful update |
+| Stale notion-id | Skips rows whose frontmatter `notion-id` is absent from the target database, with a warning, instead of silently creating duplicates |
+| New rows | Refreshes frontmatter `notion-id` after successful create/update responses so later pushes target the same row |
+
+**Audit notes:**
+- Created the live "Stonerelay Timestamp Test" fixture under Notion Testing Ground and captured `tests/fixtures/timestamp-baseline.json`.
+- Local test coverage passes for the six timestamp classes in `tests/timestamp-preservation.test.ts`.
+- Live stonerelay pull/push comparison was blocked in Codex by missing local Notion API credentials; the Notion connector could create and inspect the fixture but cannot run the plugin's API-key-backed sync path.
 
 ## v0.6.0 — 2026-04-25
 
@@ -121,8 +140,8 @@ Fork baseline. No code changes yet.
 
 ## Planned
 
-- [ ] Bidirectional sync — pair with standalone `notion-push.js` (Adversary push path) for full round-trip.
+- [ ] Bidirectional sync — pair with standalone `notion-push.js` (adversary push path) for full round-trip.
 - [ ] Custom property mappings — declarative config for Notion property → Obsidian frontmatter key transforms.
-- [ ] Obsidian-native pull patterns — match Adversary's vault structure (folder layout, naming conventions).
-- [ ] Settings UI extension — surface Adversary-specific config without breaking upstream merge compatibility.
+- [ ] Obsidian-native pull patterns — match adversary's vault structure (folder layout, naming conventions).
+- [ ] Settings UI extension — surface adversary-specific config without breaking upstream merge compatibility.
 - [ ] Upstream sync strategy — track ran-codes/main; rebase fork changes on top, not merge.
