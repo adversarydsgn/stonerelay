@@ -4,12 +4,29 @@ import { PageObjectResponse } from "@notionhq/client/build/src/api-endpoints";
 export interface NotionFreezeSettings {
 	apiKey: string;
 	defaultOutputFolder: string;
+	databases: SyncedDatabase[];
+	schemaVersion: number;
 }
 
 export const DEFAULT_SETTINGS: NotionFreezeSettings = {
 	apiKey: "",
 	defaultOutputFolder: "Notion",
+	databases: [],
+	schemaVersion: 2,
 };
+
+export type SyncStatus = "ok" | "error" | "never";
+
+export interface SyncedDatabase {
+	id: string;
+	name: string;
+	databaseId: string;
+	outputFolder: string;
+	enabled: boolean;
+	lastSyncedAt: string | null;
+	lastSyncStatus: SyncStatus;
+	lastSyncError?: string;
+}
 
 export interface FreezeFrontmatter {
 	"notion-id": string;

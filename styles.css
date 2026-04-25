@@ -1,3 +1,13 @@
 .notion-sync-input-wide {
 	width: 100%;
 }
+
+.stonerelay-sync-error {
+	color: var(--text-error);
+}
+
+.stonerelay-database-edit {
+	border-left: 2px solid var(--interactive-accent);
+	margin: 8px 0 12px;
+	padding-left: 12px;
+}

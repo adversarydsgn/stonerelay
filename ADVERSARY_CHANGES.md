@@ -2,6 +2,27 @@
 
 Fork-side changes to `stonerelay` (vs. upstream `ran-codes/obsidian-notion-database-sync`).
 
+## v0.3.0-adv — 2026-04-25
+
+Adds a persisted Notion database list and batch sync flow.
+
+**New settings/data behavior:**
+
+| Area | Change |
+|---|---|
+| `data.json` | Migrates to `schemaVersion: 2` with a `databases` array while preserving existing API key and default folder |
+| Settings tab | Adds `Synced databases` with add/edit/delete, enabled toggles, and last-sync status |
+| Commands | Adds `Stonerelay: Sync all enabled databases` and `Stonerelay: Sync one database` |
+| Sync status | Stores `lastSyncedAt`, `lastSyncStatus`, and truncated error text per configured DB |
+
+**Behavior notes:**
+- Sync All runs enabled entries sequentially and continues past per-database errors.
+- Per-database output folders fall back to the default output folder, then `_relay`.
+- The original modal-driven one-off sync command remains available.
+
+**Migration notes:**
+- Existing v0.2.0-adv installs upgrade non-destructively: `apiKey` and `defaultOutputFolder` are preserved, `databases` starts empty, and `schemaVersion` becomes `2`.
+
 ## v0.2.0-adv — 2026-04-24
 
 Adds 6 missing property type handlers identified by Agent U's v0.1.0-adv coverage audit. Live pulls in v0.1.0-adv silently dropped these — most critically `unique_id` (BUG-NN, FRIC-NN, SEC-NN auto-IDs) and `formula` (Power 150's `Contact Next`).
