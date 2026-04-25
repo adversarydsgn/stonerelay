@@ -73,7 +73,7 @@ Preserves timestamp integrity through Obsidian → Notion push round-trips.
 | New rows | Refreshes frontmatter `notion-id` after successful create/update responses so later pushes target the same row |
 
 **Audit notes:**
-- Created the live "Stonerelay Timestamp Test" fixture under Notion Testing Ground and captured `tests/fixtures/timestamp-baseline.json`.
+- Created the live "Stonerelay Timestamp Test" fixture under a Notion test database and captured `tests/fixtures/timestamp-baseline.json`.
 - Local test coverage passes for the six timestamp classes in `tests/timestamp-preservation.test.ts`.
 - Live stonerelay pull/push comparison was blocked in Codex by missing local Notion API credentials; the Notion connector could create and inspect the fixture but cannot run the plugin's API-key-backed sync path.
 
@@ -98,7 +98,7 @@ Adds Obsidian → Notion push integration for frontmatter properties.
 - Deletes are intentionally not propagated from Obsidian to Notion.
 - Status properties use Notion's `{ status: { name } }` payload shape, not select payloads.
 - Rich text is chunked at 1900 chars on safe boundaries.
-- The standalone `~/Desktop/_inbox/notion-push.js` workflow has been folded into `src/push.ts`; the script is now marked deprecated as historical reference.
+- The standalone external push script workflow has been folded into `src/push.ts`; the script is now marked deprecated as historical reference.
 - Version is plain `0.6.0` for BRAT compatibility.
 
 ## v0.5.0 — 2026-04-25
@@ -162,7 +162,7 @@ Adds a persisted Notion database list and batch sync flow.
 
 ## v0.2.0-adv — 2026-04-24
 
-Adds 6 missing property type handlers identified by Agent U's v0.1.0-adv coverage audit. Live pulls in v0.1.0-adv silently dropped these — most critically `unique_id` (BUG-NN, FRIC-NN, SEC-NN auto-IDs) and `formula` (Power 150's `Contact Next`).
+Adds 6 missing property type handlers identified by an internal coverage audit. Live pulls in v0.1.0-adv silently dropped these — most critically `unique_id` (auto-ID columns like `unique_id` prefixes) and `formula` (a date-formula property).
 
 **New handlers in `src/page-writer.ts` (`mapPropertiesToFrontmatter`):**
 
