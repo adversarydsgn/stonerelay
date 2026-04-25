@@ -10,6 +10,7 @@ import { notionRequest } from "./notion-client";
 import { convertRichText } from "./block-converter";
 import { writeDatabaseEntry } from "./page-writer";
 import { FrozenDatabase } from "./freeze-modal";
+import { buildBaseFile, inferDefaultViews } from "./view-inference";
 
 export async function freshDatabaseImport(
 	app: App,
@@ -48,13 +49,13 @@ export async function freshDatabaseImport(
 		client.dataSources.retrieve({ data_source_id: dataSourceId })
 	)) as DataSourceObjectResponse;
 
-	// Create folder and generate .base file
+	// Create folder
 	await ensureFolderExists(app, folderPath);
-	await generateBaseFile(app, dataSource, folderPath, databaseId);
 
 	// Query all entries
 	onProgress?.({ phase: "querying" });
 	const entries = await queryAllEntries(client, dataSourceId);
+	await generateBaseFile(app, dataSource, folderPath, databaseId, entries);
 
 	const total = entries.length;
 	let created = 0;
@@ -105,6 +106,7 @@ export async function refreshDatabase(
 	app: App,
 	client: Client,
 	db: FrozenDatabase,
+	lastSyncedAt?: string | null,
 	onProgress?: ProgressCallback
 ): Promise<DatabaseSyncResult> {
 	// Query fresh metadata
@@ -161,7 +163,7 @@ export async function refreshDatabase(
 	onProgress?.({ phase: "detected", staleCount: staleEntries.length, total });
 
 	// Update .base file (schema may have changed)
-	await generateBaseFile(app, dataSource, db.folderPath, db.databaseId);
+	await generateBaseFile(app, dataSource, db.folderPath, db.databaseId, entries, lastSyncedAt);
 
 	// Import only stale entries
 	let created = 0;
@@ -301,7 +303,9 @@ async function generateBaseFile(
 	app: App,
 	dataSource: DataSourceObjectResponse,
 	folderPath: string,
-	notionId: string
+	notionId: string,
+	rows: PageObjectResponse[] = [],
+	lastSyncedAt?: string | null
 ): Promise<void> {
 	const title = convertRichText(dataSource.title) || "Untitled Database";
 	const basePath = normalizePath(`${folderPath}/${title}.base`);
@@ -313,32 +317,33 @@ async function generateBaseFile(
 		order.push(name);
 	}
 
-	// Obsidian Bases use YAML with expression-based filters
-	const yamlLines: string[] = [];
-	yamlLines.push("filters:");
-	yamlLines.push("  and:");
-	yamlLines.push(`    - file.inFolder("${folderPath}")`);
-	yamlLines.push(`    - 'note["notion-database-id"] == "${notionId}"'`);
-	yamlLines.push("");
-	yamlLines.push("views:");
-	yamlLines.push("  - type: table");
-	yamlLines.push("    name: All entries");
-	if (order.length > 0) {
-		yamlLines.push("    order:");
-		for (const prop of order) {
-			yamlLines.push(`      - "${prop}"`);
+	const existingFile = app.vault.getAbstractFileByPath(basePath);
+	if (existingFile instanceof TFile) {
+		if (isUserEditedBaseFile(existingFile, lastSyncedAt)) {
+			console.log(`Preserving user-edited base file: ${basePath}`);
+			return;
 		}
 	}
-	yamlLines.push("");
 
-	const baseContent = yamlLines.join("\n");
+	const inferred = inferDefaultViews(rows, dataSource);
+	const baseContent = buildBaseFile(inferred, {
+		folderPath,
+		notionId,
+		order,
+	});
 
-	const existingFile = app.vault.getAbstractFileByPath(basePath);
 	if (existingFile instanceof TFile) {
 		await app.vault.modify(existingFile, baseContent);
 	} else {
 		await app.vault.create(basePath, baseContent);
 	}
+}
+
+function isUserEditedBaseFile(file: TFile, lastSyncedAt?: string | null): boolean {
+	if (!lastSyncedAt) return false;
+	const lastSyncedTime = Date.parse(lastSyncedAt);
+	if (Number.isNaN(lastSyncedTime)) return false;
+	return file.stat.mtime > lastSyncedTime;
 }
 
 async function ensureFolderExists(app: App, path: string): Promise<void> {

@@ -127,7 +127,7 @@ export default class NotionFreezePlugin extends Plugin {
 		entry: SyncedDatabase,
 		outputFolder: string
 	): Promise<DatabaseSyncResult> {
-		return this.syncDatabase(entry.databaseId, outputFolder);
+		return this.syncDatabase(entry.databaseId, outputFolder, entry.lastSyncedAt);
 	}
 
 	private async executeFreshImport(
@@ -160,7 +160,8 @@ export default class NotionFreezePlugin extends Plugin {
 
 	private async syncDatabase(
 		databaseId: string,
-		outputFolder: string
+		outputFolder: string,
+		lastSyncedAt?: string | null
 	): Promise<DatabaseSyncResult> {
 		if (!this.settings.apiKey) {
 			new Notice("Notion API key not set. Configure in plugin settings.");
@@ -170,7 +171,7 @@ export default class NotionFreezePlugin extends Plugin {
 		const normalizedId = normalizeNotionId(databaseId);
 		const existing = this.findFrozenDatabase(normalizedId);
 		if (existing) {
-			return this.refreshFrozenDatabase(existing);
+			return this.refreshFrozenDatabase(existing, lastSyncedAt);
 		}
 
 		const client = createNotionClient(this.settings.apiKey);
@@ -205,7 +206,10 @@ export default class NotionFreezePlugin extends Plugin {
 		}
 	}
 
-	private async refreshFrozenDatabase(db: FrozenDatabase): Promise<DatabaseSyncResult> {
+	private async refreshFrozenDatabase(
+		db: FrozenDatabase,
+		lastSyncedAt?: string | null
+	): Promise<DatabaseSyncResult> {
 		if (!this.settings.apiKey) {
 			new Notice("Notion API key not set. Configure in plugin settings.");
 			throw new Error("Notion API key not set.");
@@ -218,6 +222,7 @@ export default class NotionFreezePlugin extends Plugin {
 				this.app,
 				client,
 				db,
+				lastSyncedAt,
 				(progress) => {
 					switch (progress.phase) {
 						case "querying":

@@ -2,6 +2,25 @@
 
 Fork-side changes to `stonerelay` (vs. upstream `ran-codes/obsidian-notion-database-sync`).
 
+## v0.5.0 — 2026-04-25
+
+Adds auto-inferred default views for generated Obsidian `.base` files.
+
+**New `.base` behavior:**
+
+| Area | Change |
+|---|---|
+| Date views | Detects date-like properties and adds a `Recent` table sorted descending |
+| Open views | Detects status/resolved/done-style properties and adds `Open`, `Unresolved`, or `Active` views |
+| Category views | Detects select/multi-select severity/priority/category-style properties and adds grouped `By <Category>` views |
+| Minimal fallback | Databases without inferable properties still get the v0.4-compatible single `All entries` table |
+| User edits | Existing `.base` files newer than the last configured sync are preserved instead of overwritten |
+
+**Behavior notes:**
+- View inference uses the Notion data source schema plus the first 10 pulled rows.
+- Generated views are ordered most-useful first: `Recent`, open/unresolved, grouped category, then `All entries`.
+- Version is plain `0.5.0` for BRAT upgrade compatibility from `0.4.0-adv`.
+
 ## v0.4.0-adv — 2026-04-25
 
 Polishes the persisted database settings flow so users can paste a Notion URL or ID, fetch metadata, review the auto-filled label/folder, and save.
