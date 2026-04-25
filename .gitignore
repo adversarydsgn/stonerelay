@@ -11,3 +11,14 @@ node_modules/
 
 # Reference code (not part of this plugin)
 obsidian-importer/
+
+# Adversary internal artifacts — never commit
+.env
+.env.*
+data.json
+.DS_Store
+.agents/
+SPEC-*.md
+PROBE-*.md
+HANDOFF-*.md
+audit-report.md
