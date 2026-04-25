@@ -407,17 +407,28 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 		new Setting(wrapper)
 			.setName("Sync direction")
 			.setDesc("Pull = Notion → Obsidian. Push = Obsidian → Notion. Bidirectional = both ways (conflict rules apply, see v0.7+).")
-			.addDropdown((dropdown) =>
-				dropdown
-					.addOption("pull", "Pull")
-					.addOption("push", "Push")
-					.addOption("bidirectional", "Bidirectional")
-					.setValue(draft.direction ?? "pull")
-					.onChange((value) => {
-						draft.direction = value === "push" || value === "bidirectional" ? value : "pull";
+			.then((setting) => {
+				const group = setting.controlEl.createDiv({ cls: "stonerelay-direction-selector" });
+				for (const option of [
+					{ value: "pull", label: "Pull" },
+					{ value: "push", label: "Push" },
+					{ value: "bidirectional", label: "Bidirectional" },
+				] as const) {
+					const button = group.createEl("button", {
+						text: option.label,
+						cls: "stonerelay-direction-option",
+					});
+					button.type = "button";
+					if ((draft.direction ?? "pull") === option.value) {
+						button.addClass("is-active");
+					}
+					button.onClickEvent(() => {
+						draft.direction = option.value;
 						state.validationError = undefined;
-					})
-			);
+						this.display();
+					});
+				}
+			});
 
 		new Setting(wrapper)
 			.addButton((btn) => {
