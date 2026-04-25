@@ -19,6 +19,7 @@ Sync Notion databases and pages into your Obsidian vault as Markdown files.
 - **Incremental updates** — Re-sync only fetches pages that have changed since the last sync.
 - **Deletion tracking** — Entries removed from Notion are flagged with `notion-deleted: true` in frontmatter rather than deleted locally.
 - **Property mapping** — Notion database properties (text, number, select, multi-select, date, checkbox, URL, etc.) are converted to YAML frontmatter fields.
+- **Block conversion** — Notion headings h1-h6 are converted to Markdown heading syntax.
 
 ## Setup
 

@@ -1,6 +1,6 @@
 {
 	"name": "obsidian-notion-database-sync",
-	"version": "0.6.4",
+	"version": "0.6.5",
 	"description": "Sync Notion databases and pages into your vault as Markdown.",
 	"main": "main.js",
 	"scripts": {

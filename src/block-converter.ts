@@ -42,6 +42,22 @@ async function convertBlock(
 	numberedIndex: number
 ): Promise<string> {
 	const indent = "    ".repeat(ctx.indentLevel);
+	const blockType = block.type as string;
+
+	if (
+		blockType === "heading_4" ||
+		blockType === "heading_5" ||
+		blockType === "heading_6"
+	) {
+		const level = Number(blockType.slice(-1)) as HeadingLevel;
+		const heading = (
+			block as unknown as Record<
+				string,
+				{ rich_text: RichTextItemResponse[]; is_toggleable?: boolean }
+			>
+		)[blockType];
+		return convertHeading(heading, level, block, ctx);
+	}
 
 	switch (block.type) {
 		case "paragraph": {
@@ -51,30 +67,15 @@ async function convertBlock(
 		}
 
 		case "heading_1": {
-			const text = convertRichText(block.heading_1.rich_text);
-			if (block.heading_1.is_toggleable) {
-				const children = await maybeConvertChildren(block, ctx);
-				return `> [!note]+ # ${text}${children}`;
-			}
-			return `# ${text}`;
+			return convertHeading(block.heading_1, 1, block, ctx);
 		}
 
 		case "heading_2": {
-			const text = convertRichText(block.heading_2.rich_text);
-			if (block.heading_2.is_toggleable) {
-				const children = await maybeConvertChildren(block, ctx);
-				return `> [!note]+ ## ${text}${children}`;
-			}
-			return `## ${text}`;
+			return convertHeading(block.heading_2, 2, block, ctx);
 		}
 
 		case "heading_3": {
-			const text = convertRichText(block.heading_3.rich_text);
-			if (block.heading_3.is_toggleable) {
-				const children = await maybeConvertChildren(block, ctx);
-				return `> [!note]+ ### ${text}${children}`;
-			}
-			return `### ${text}`;
+			return convertHeading(block.heading_3, 3, block, ctx);
 		}
 
 		case "bulleted_list_item": {
@@ -257,6 +258,23 @@ async function convertBlock(
 			return "";
 		}
 	}
+}
+
+type HeadingLevel = 1 | 2 | 3 | 4 | 5 | 6;
+
+async function convertHeading(
+	heading: { rich_text: RichTextItemResponse[]; is_toggleable?: boolean },
+	level: HeadingLevel,
+	block: BlockObjectResponse,
+	ctx: ConvertContext
+): Promise<string> {
+	const hashes = "#".repeat(level);
+	const text = convertRichText(heading.rich_text);
+	if (heading.is_toggleable) {
+		const children = await maybeConvertChildren(block, ctx);
+		return `> [!note]+ ${hashes} ${text}${children}`;
+	}
+	return `${hashes} ${text}`;
 }
 
 async function maybeConvertChildren(

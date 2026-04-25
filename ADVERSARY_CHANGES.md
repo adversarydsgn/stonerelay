@@ -2,6 +2,24 @@
 
 Fork-side changes to `stonerelay` (vs. upstream `ran-codes/obsidian-notion-database-sync`).
 
+## v0.6.5 — 2026-04-25
+
+Adds pull-side block conversion for leaked Notion `heading_4`, `heading_5`, and `heading_6` blocks.
+
+**Heading block behavior:**
+
+| Area | Change |
+|---|---|
+| `heading_4` | Converts to `####` Markdown instead of being dropped as unsupported |
+| `heading_5` | Converts to `#####` Markdown instead of being dropped as unsupported |
+| `heading_6` | Converts to `######` Markdown instead of being dropped as unsupported |
+| Existing headings | Keeps `heading_1`, `heading_2`, and `heading_3` conversion behavior intact |
+| Rich text | Preserves existing rich-text concatenation and annotation rendering through the shared converter |
+
+**Behavior notes:**
+- Pull-side only: push handling for h4/h5/h6 remains out of scope because Notion's public block API only accepts h1-h3.
+- Unsupported-block warnings remain for genuinely unhandled block types, but no longer fire for h4/h5/h6.
+
 ## v0.6.4 — 2026-04-25
 
 Fixes the v0.6.3 form layout so the new direction copy and preview controls are visible at modal width.
