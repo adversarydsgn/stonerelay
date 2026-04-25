@@ -16,7 +16,7 @@ function settings(databases: SyncedDatabase[] = []): NotionFreezeSettings {
 		apiKey: "ntn_test",
 		defaultOutputFolder: "_relay",
 		databases,
-		schemaVersion: 2,
+		schemaVersion: 3,
 	};
 }
 
@@ -26,10 +26,13 @@ function database(overrides: Partial<SyncedDatabase> = {}): SyncedDatabase {
 		name: overrides.name ?? "Sessions Mirror",
 		databaseId: overrides.databaseId ?? dashedId,
 		outputFolder: overrides.outputFolder ?? "3. System/Sessions",
+		direction: overrides.direction ?? "pull",
 		enabled: overrides.enabled ?? true,
 		lastSyncedAt: overrides.lastSyncedAt ?? null,
 		lastSyncStatus: overrides.lastSyncStatus ?? "never",
 		lastSyncError: overrides.lastSyncError,
+		lastPulledAt: overrides.lastPulledAt ?? overrides.lastSyncedAt ?? null,
+		lastPushedAt: overrides.lastPushedAt ?? null,
 	};
 }
 
@@ -43,7 +46,7 @@ describe("settings data migration", () => {
 		expect(migrated.apiKey).toBe("ntn_existing");
 		expect(migrated.defaultOutputFolder).toBe("Notion");
 		expect(migrated.databases).toEqual([]);
-		expect(migrated.schemaVersion).toBe(2);
+		expect(migrated.schemaVersion).toBe(3);
 	});
 
 	it("is idempotent on already migrated data", () => {
@@ -54,8 +57,40 @@ describe("settings data migration", () => {
 		expect(migrated.databases[0]).toEqual({
 			...db,
 			databaseId: rawId,
+			direction: "pull",
+			lastPulledAt: null,
+			lastPushedAt: null,
 		});
-		expect(migrated.schemaVersion).toBe(2);
+		expect(migrated.schemaVersion).toBe(3);
+	});
+
+	it("migrates v0.5 entries to schema 3 without data loss", () => {
+		const migrated = migrateData({
+			apiKey: "ntn_existing",
+			defaultOutputFolder: "_relay",
+			schemaVersion: 2,
+			databases: [{
+				id: "db-1",
+				name: "Bugs",
+				databaseId: dashedId,
+				outputFolder: "_relay/bugs",
+				enabled: true,
+				lastSyncedAt: "2026-04-24T10:00:00.000Z",
+				lastSyncStatus: "ok",
+			} as SyncedDatabase],
+		});
+
+		expect(migrated.schemaVersion).toBe(3);
+		expect(migrated.databases[0]).toMatchObject({
+			id: "db-1",
+			name: "Bugs",
+			databaseId: rawId,
+			outputFolder: "_relay/bugs",
+			direction: "pull",
+			lastSyncedAt: "2026-04-24T10:00:00.000Z",
+			lastPulledAt: "2026-04-24T10:00:00.000Z",
+			lastPushedAt: null,
+		});
 	});
 });
 
@@ -70,6 +105,7 @@ describe("database list operations", () => {
 		expect(updated.databases).toHaveLength(1);
 		expect(updated.databases[0].id).toBeTruthy();
 		expect(updated.databases[0].databaseId).toBe(rawId);
+		expect(updated.databases[0].direction).toBe("pull");
 	});
 
 	it("removeDatabase removes by id and no-ops on unknown id", () => {
@@ -99,9 +135,26 @@ describe("syncAll", () => {
 		expect(result.errored).toBe(1);
 		expect(result.settings.databases[0].lastSyncStatus).toBe("ok");
 		expect(result.settings.databases[0].lastSyncedAt).toBeTruthy();
+		expect(result.settings.databases[0].lastPulledAt).toBeTruthy();
 		expect(result.settings.databases[1].lastSyncStatus).toBe("never");
 		expect(result.settings.databases[2].lastSyncStatus).toBe("error");
 		expect(result.settings.databases[2].lastSyncError).toBe("No access to database");
+	});
+
+	it("push mode only runs push and bidirectional databases", async () => {
+		const pull = database({ id: "pull", direction: "pull" });
+		const push = database({ id: "push", direction: "push" });
+		const both = database({ id: "both", direction: "bidirectional" });
+		const calls: string[] = [];
+
+		const result = await syncAll(settings([pull, push, both]), async (entry) => {
+			calls.push(entry.id);
+		}, undefined, "push");
+
+		expect(calls).toEqual(["push", "both"]);
+		expect(result.settings.databases[0].lastPushedAt).toBeNull();
+		expect(result.settings.databases[1].lastPushedAt).toBeTruthy();
+		expect(result.settings.databases[2].lastPushedAt).toBeTruthy();
 	});
 
 	it("shows a notice when no enabled databases exist", async () => {
@@ -116,7 +169,7 @@ describe("syncAll", () => {
 
 		expect(result.ok).toBe(0);
 		expect(result.errored).toBe(0);
-		expect(notices).toEqual(["No enabled databases to sync."]);
+		expect(notices).toEqual(["No enabled databases to pull."]);
 	});
 });
 

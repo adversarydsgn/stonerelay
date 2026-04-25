@@ -12,20 +12,24 @@ export const DEFAULT_SETTINGS: NotionFreezeSettings = {
 	apiKey: "",
 	defaultOutputFolder: "Notion",
 	databases: [],
-	schemaVersion: 2,
+	schemaVersion: 3,
 };
 
 export type SyncStatus = "ok" | "error" | "never";
+export type SyncDirection = "pull" | "push" | "bidirectional";
 
 export interface SyncedDatabase {
 	id: string;
 	name: string;
 	databaseId: string;
 	outputFolder: string;
+	direction: SyncDirection;
 	enabled: boolean;
 	lastSyncedAt: string | null;
 	lastSyncStatus: SyncStatus;
 	lastSyncError?: string;
+	lastPulledAt: string | null;
+	lastPushedAt: string | null;
 }
 
 export interface FreezeFrontmatter {

@@ -5,6 +5,7 @@ import { FreezeModal, FrozenDatabase } from "./freeze-modal";
 import { createNotionClient, normalizeNotionId } from "./notion-client";
 import { freshDatabaseImport, refreshDatabase } from "./database-freezer";
 import { migrateData, resolveOutputFolder, syncAll, updateDatabase } from "./settings-data";
+import { pushDatabase } from "./push";
 
 export default class NotionFreezePlugin extends Plugin {
 	settings: NotionFreezeSettings = migrateData(null);
@@ -42,12 +43,24 @@ export default class NotionFreezePlugin extends Plugin {
 			name: "Stonerelay: Sync one database",
 			callback: () => this.openConfiguredDatabasePicker(),
 		});
+
+		this.addCommand({
+			id: "stonerelay:push-all",
+			name: "Stonerelay: Push all enabled databases (push or bidirectional)",
+			callback: () => { void this.pushAllEnabledDatabases(); },
+		});
+
+		this.addCommand({
+			id: "stonerelay:push-database",
+			name: "Stonerelay: Push one database",
+			callback: () => this.openConfiguredDatabasePicker("push"),
+		});
 	}
 
 	async loadSettings(): Promise<void> {
 		const raw = await this.loadData();
 		this.settings = migrateData(raw);
-		if (!raw?.schemaVersion || raw.schemaVersion < 2) {
+		if (!raw?.schemaVersion || raw.schemaVersion < 3) {
 			await this.saveSettings();
 		}
 	}
@@ -85,24 +98,52 @@ export default class NotionFreezePlugin extends Plugin {
 		(this.app.workspace as any).trigger("stonerelay:settings-updated");
 	}
 
-	private openConfiguredDatabasePicker(): void {
-		if (this.settings.databases.length === 0) {
+	async pushAllEnabledDatabases(): Promise<void> {
+		const result = await syncAll(
+			this.settings,
+			async (entry, outputFolder) => {
+				const result = await this.pushConfiguredDatabase(entry, outputFolder);
+				if (result.failed > 0) {
+					throw new Error(result.errors.join("\n") || `${result.failed} push rows failed`);
+				}
+			},
+			(message) => new Notice(message),
+			"push"
+		);
+		this.settings = result.settings;
+		await this.saveSettings();
+		(this.app.workspace as any).trigger("stonerelay:settings-updated");
+	}
+
+	private openConfiguredDatabasePicker(mode: "pull" | "push" = "pull"): void {
+		const databases = this.settings.databases.filter((entry) =>
+			mode === "pull"
+				? entry.direction === "pull" || entry.direction === "bidirectional"
+				: entry.direction === "push" || entry.direction === "bidirectional"
+		);
+		if (databases.length === 0) {
 			this.openFreezeModal();
 			return;
 		}
 
-		new DatabasePickerModal(this.app, this.settings.databases, (entry) => {
-			void this.syncOneConfiguredDatabase(entry);
-		}).open();
+		new DatabasePickerModal(this.app, databases, (entry) => {
+			if (mode === "push") {
+				void this.pushOneConfiguredDatabase(entry);
+			} else {
+				void this.syncOneConfiguredDatabase(entry);
+			}
+		}, mode).open();
 	}
 
 	async syncOneConfiguredDatabase(entry: SyncedDatabase): Promise<void> {
 		try {
 			new Notice(`Syncing ${entry.name}...`);
 			await this.syncConfiguredDatabase(entry, resolveOutputFolder(this.settings, entry));
+			const now = new Date().toISOString();
 			this.settings = updateDatabase(this.settings, {
 				...entry,
-				lastSyncedAt: new Date().toISOString(),
+				lastSyncedAt: now,
+				lastPulledAt: now,
 				lastSyncStatus: "ok",
 				lastSyncError: undefined,
 			});
@@ -123,11 +164,66 @@ export default class NotionFreezePlugin extends Plugin {
 		}
 	}
 
+	async pushOneConfiguredDatabase(entry: SyncedDatabase): Promise<void> {
+		try {
+			new Notice(`Pushing ${entry.name}...`);
+			const result = await this.pushConfiguredDatabase(entry, resolveOutputFolder(this.settings, entry));
+			const now = new Date().toISOString();
+			this.settings = updateDatabase(this.settings, {
+				...entry,
+				lastSyncedAt: now,
+				lastPushedAt: now,
+				lastSyncStatus: result.failed > 0 ? "error" : "ok",
+				lastSyncError: result.errors.length > 0 ? result.errors.join("\n").slice(0, 200) : undefined,
+			});
+			await this.saveSettings();
+			(this.app.workspace as any).trigger("stonerelay:settings-updated");
+			new Notice(formatDatabaseResult(result.title, result, "pushed"));
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			this.settings = updateDatabase(this.settings, {
+				...entry,
+				lastSyncStatus: "error",
+				lastSyncError: message.slice(0, 200),
+			});
+			await this.saveSettings();
+			(this.app.workspace as any).trigger("stonerelay:settings-updated");
+			console.error("Stonerelay push error:", err);
+			new Notice(`Stonerelay push error: ${message}`);
+		}
+	}
+
 	async syncConfiguredDatabase(
 		entry: SyncedDatabase,
 		outputFolder: string
 	): Promise<DatabaseSyncResult> {
 		return this.syncDatabase(entry.databaseId, outputFolder, entry.lastSyncedAt);
+	}
+
+	async pushConfiguredDatabase(
+		entry: SyncedDatabase,
+		sourceFolder: string
+	): Promise<DatabaseSyncResult> {
+		if (!this.settings.apiKey) {
+			new Notice("Notion API key not set. Configure in plugin settings.");
+			throw new Error("Notion API key not set.");
+		}
+
+		const client = createNotionClient(this.settings.apiKey);
+		const notice = new Notice(`Pushing "${entry.name}" to Notion...`, 0);
+		try {
+			const result = await pushDatabase(
+				this.app,
+				client,
+				normalizeNotionId(entry.databaseId),
+				sourceFolder
+			);
+			notice.hide();
+			return result;
+		} catch (err) {
+			notice.hide();
+			throw err;
+		}
 	}
 
 	private async executeFreshImport(
@@ -285,16 +381,19 @@ export default class NotionFreezePlugin extends Plugin {
 class DatabasePickerModal extends SuggestModal<SyncedDatabase> {
 	private databases: SyncedDatabase[];
 	private onChoose: (entry: SyncedDatabase) => void;
+	private mode: "pull" | "push";
 
 	constructor(
 		app: App,
 		databases: SyncedDatabase[],
-		onChoose: (entry: SyncedDatabase) => void
+		onChoose: (entry: SyncedDatabase) => void,
+		mode: "pull" | "push" = "pull"
 	) {
 		super(app);
 		this.databases = databases;
 		this.onChoose = onChoose;
-		this.setPlaceholder("Choose a Stonerelay database to sync");
+		this.mode = mode;
+		this.setPlaceholder(`Choose a Stonerelay database to ${mode}`);
 	}
 
 	getSuggestions(query: string): SyncedDatabase[] {
@@ -309,7 +408,7 @@ class DatabasePickerModal extends SuggestModal<SyncedDatabase> {
 	renderSuggestion(entry: SyncedDatabase, el: HTMLElement): void {
 		el.createEl("div", { text: entry.name });
 		el.createEl("small", {
-			text: `${entry.enabled ? "Enabled" : "Disabled"} · ${entry.outputFolder || "Default folder"}`,
+			text: `${entry.enabled ? "Enabled" : "Disabled"} · ${entry.direction} · ${entry.outputFolder || "Default folder"}`,
 		});
 	}
 

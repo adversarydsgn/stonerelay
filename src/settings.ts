@@ -106,7 +106,7 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 		}
 		containerEl.createEl("p", {
 			cls: "setting-item-description stonerelay-section-desc",
-			text: "Notion databases that get synced when you run \"Sync all enabled databases\" or \"Sync one database\". Add a database below.",
+			text: "Notion databases that get synced when you run pull or push commands. v0.6 pushes frontmatter properties only; page body sync is planned for v0.7.",
 		});
 
 		if (this.plugin.settings.databases.length === 0 && !this.draft) {
@@ -143,9 +143,12 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 							name: "",
 							databaseId: "",
 							outputFolder: "",
+							direction: "pull",
 							enabled: true,
 							lastSyncedAt: null,
 							lastSyncStatus: "never",
+							lastPulledAt: null,
+							lastPushedAt: null,
 						};
 						this.editState = this.createEditState("");
 						this.display();
@@ -161,6 +164,16 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 				if (!this.plugin.settings.databases.some((entry) => entry.enabled)) {
 					btn.buttonEl.hide();
 				}
+			})
+			.addButton((btn) => {
+				btn
+					.setButtonText("Push all enabled")
+					.onClick(() => {
+						void this.plugin.pushAllEnabledDatabases();
+					});
+				if (!this.plugin.settings.databases.some((entry) => entry.enabled && canPush(entry))) {
+					btn.buttonEl.hide();
+				}
 			});
 	}
 
@@ -172,7 +185,7 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 
 	private renderDatabaseRow(containerEl: HTMLElement, entry: SyncedDatabase): void {
 		const desc = document.createDocumentFragment();
-		desc.append(document.createTextNode(`${entry.databaseId}  ·  ${entry.outputFolder || "Default folder"}  ·  `));
+		desc.append(document.createTextNode(`${entry.databaseId}  ·  ${entry.outputFolder || "Default folder"}  ·  ${directionIcon(entry)}  ·  `));
 		desc.appendChild(this.formatLastSync(entry));
 
 		const setting = new Setting(containerEl)
@@ -204,6 +217,15 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 						void this.syncRow(entry);
 					})
 			);
+			if (canPush(entry)) {
+				setting.addButton((btn) =>
+					btn
+						.setButtonText("Push now")
+						.onClick(() => {
+							void this.pushRow(entry);
+						})
+				);
+			}
 		}
 
 		setting
@@ -283,6 +305,7 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 					name: finalName,
 					databaseId,
 					outputFolder: finalOutput,
+					direction: draft.direction ?? "pull",
 					enabled: this.editingId === "__new__" ? true : draft.enabled,
 				});
 				this.plugin.settings = this.editingId === "__new__"
@@ -377,6 +400,21 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 					.onChange((value) => {
 						draft.outputFolder = value.trim();
 						state.outputTouched = true;
+						state.validationError = undefined;
+					})
+			);
+
+		new Setting(wrapper)
+			.setName("Sync direction")
+			.setDesc("Pull = Notion → Obsidian. Push = Obsidian → Notion. Bidirectional = both ways (conflict rules apply, see v0.7+).")
+			.addDropdown((dropdown) =>
+				dropdown
+					.addOption("pull", "Pull")
+					.addOption("push", "Push")
+					.addOption("bidirectional", "Bidirectional")
+					.setValue(draft.direction ?? "pull")
+					.onChange((value) => {
+						draft.direction = value === "push" || value === "bidirectional" ? value : "pull";
 						state.validationError = undefined;
 					})
 			);
@@ -500,6 +538,14 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 		this.display();
 	}
 
+	private async pushRow(entry: SyncedDatabase): Promise<void> {
+		this.syncingIds.add(entry.id);
+		this.display();
+		await this.plugin.pushOneConfiguredDatabase(entry);
+		this.syncingIds.delete(entry.id);
+		this.display();
+	}
+
 	private formatLastSync(entry: SyncedDatabase): HTMLElement {
 		if (entry.lastSyncStatus === "error") {
 			const el = document.createElement("button");
@@ -614,4 +660,14 @@ function relativeTime(iso: string): string {
 
 function truncate(value: string): string {
 	return value.length > 80 ? `${value.slice(0, 77)}...` : value;
+}
+
+function canPush(entry: SyncedDatabase): boolean {
+	return entry.direction === "push" || entry.direction === "bidirectional";
+}
+
+function directionIcon(entry: SyncedDatabase): string {
+	if (entry.direction === "push") return "→";
+	if (entry.direction === "bidirectional") return "⟷";
+	return "←";
 }

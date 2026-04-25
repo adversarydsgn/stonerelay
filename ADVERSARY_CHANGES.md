@@ -2,6 +2,30 @@
 
 Fork-side changes to `stonerelay` (vs. upstream `ran-codes/obsidian-notion-database-sync`).
 
+## v0.6.0 — 2026-04-25
+
+Adds Obsidian → Notion push integration for frontmatter properties.
+
+**New push behavior:**
+
+| Area | Change |
+|---|---|
+| Direction config | Per-database `direction` supports `pull`, `push`, and `bidirectional`; existing entries migrate to `pull` under schema version 3 |
+| Push commands | Adds `Stonerelay: Push all enabled databases` and `Stonerelay: Push one database` |
+| Row actions | Push or bidirectional rows show a direction icon plus `Push now` |
+| Upsert semantics | Matches by `notion-id` first, then title, and updates existing Notion pages in place |
+| New rows | Markdown files without a matching Notion row create pages in the configured database |
+| Property handlers | Pushes title, rich text, number, select, multi-select, status, date, checkbox, URL, email, phone, and relation properties |
+| Rate limits | Reuses the existing 340ms throttle and 5-retry Notion request wrapper |
+
+**Behavior notes:**
+- v0.6 push syncs frontmatter properties only. Markdown body → Notion blocks is deferred to v0.7.
+- Deletes are intentionally not propagated from Obsidian to Notion.
+- Status properties use Notion's `{ status: { name } }` payload shape, not select payloads.
+- Rich text is chunked at 1900 chars on safe boundaries.
+- The standalone `~/Desktop/_inbox/notion-push.js` workflow has been folded into `src/push.ts`; the script is now marked deprecated as historical reference.
+- Version is plain `0.6.0` for BRAT compatibility.
+
 ## v0.5.0 — 2026-04-25
 
 Adds auto-inferred default views for generated Obsidian `.base` files.

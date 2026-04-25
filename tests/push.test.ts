@@ -1,0 +1,232 @@
+import { describe, expect, it, vi } from "vitest";
+import { TFile, TFolder } from "obsidian";
+import {
+	chunkText,
+	frontmatterValueToNotionPayload,
+	parseFrontmatter,
+	pushDatabase,
+	PushContext,
+} from "../src/push";
+
+function ctx(): PushContext {
+	return {
+		titleToPageId: new Map([["Existing Relation", "rel-1"]]),
+		titleToNotionId: new Map(),
+		notionIdToPageId: new Map(),
+		warnings: [],
+	};
+}
+
+describe("push property handlers", () => {
+	it("converts happy path writable property types", () => {
+		const relationCtx = ctx();
+		expect(frontmatterValueToNotionPayload("title", "Name", "Bug 57")).toEqual({
+			title: [{ type: "text", text: { content: "Bug 57" } }],
+		});
+		expect(frontmatterValueToNotionPayload("rich_text", "Notes", "Long note")).toEqual({
+			rich_text: [{ type: "text", text: { content: "Long note" } }],
+		});
+		expect(frontmatterValueToNotionPayload("number", "Score", "12")).toEqual({ number: 12 });
+		expect(frontmatterValueToNotionPayload("select", "Type", "Bug")).toEqual({ select: { name: "Bug" } });
+		expect(frontmatterValueToNotionPayload("multi_select", "Tags", ["UX", "API"])).toEqual({
+			multi_select: [{ name: "UX" }, { name: "API" }],
+		});
+		expect(frontmatterValueToNotionPayload("status", "Status", "Done")).toEqual({ status: { name: "Done" } });
+		expect(frontmatterValueToNotionPayload("date", "Due", "2026-04-25")).toEqual({ date: { start: "2026-04-25" } });
+		expect(frontmatterValueToNotionPayload("checkbox", "Shipped", "yes")).toEqual({ checkbox: true });
+		expect(frontmatterValueToNotionPayload("url", "URL", "https://example.com")).toEqual({ url: "https://example.com" });
+		expect(frontmatterValueToNotionPayload("email", "Email", "a@example.com")).toEqual({ email: "a@example.com" });
+		expect(frontmatterValueToNotionPayload("phone_number", "Phone", "555-0100")).toEqual({ phone_number: "555-0100" });
+		expect(frontmatterValueToNotionPayload("relation", "Related", ["[[Existing Relation]]"], relationCtx)).toEqual({
+			relation: [{ id: "rel-1" }],
+		});
+	});
+
+	it("handles edge cases and skips read-only or complex types", () => {
+		const relationCtx = ctx();
+		expect(frontmatterValueToNotionPayload("number", "Score", "nope")).toBeUndefined();
+		expect(frontmatterValueToNotionPayload("multi_select", "Tags", "")).toBeUndefined();
+		expect(frontmatterValueToNotionPayload("status", "Status", "Todo")).not.toHaveProperty("select");
+		expect(frontmatterValueToNotionPayload("date", "Range", "2026-04-25 → 2026-04-26")).toEqual({
+			date: { start: "2026-04-25", end: "2026-04-26" },
+		});
+		expect(frontmatterValueToNotionPayload("checkbox", "Shipped", "false")).toEqual({ checkbox: false });
+		expect(frontmatterValueToNotionPayload("relation", "Related", "[[Missing]]", relationCtx)).toBeUndefined();
+		expect(relationCtx.warnings[0]).toContain("Unresolved relation");
+
+		for (const type of ["people", "files", "formula", "rollup", "unique_id", "created_time", "created_by", "last_edited_time", "last_edited_by", "button", "verification"]) {
+			expect(frontmatterValueToNotionPayload(type, "Read only", "value")).toBeUndefined();
+		}
+	});
+
+	it("chunks rich text over 1900 chars on safe boundaries", () => {
+		const long = `${"a".repeat(1200)}. ${"b".repeat(900)}. ${"c".repeat(50)}`;
+		const chunks = chunkText(long);
+		expect(chunks).toHaveLength(2);
+		expect(chunks[0].text.content.length).toBeLessThanOrEqual(1900);
+		expect(chunks[0].text.content.endsWith(".")).toBe(true);
+		expect(chunks.map((chunk) => chunk.text.content).join(" ").length).toBe(long.length);
+	});
+});
+
+describe("frontmatter parser", () => {
+	it("parses scalars, arrays, and body content", () => {
+		expect(parseFrontmatter("---\nStatus: Done\nTags:\n  - UX\n  - API\nCount: 2\n---\n# Body")).toEqual({
+			props: {
+				Status: "Done",
+				Tags: ["UX", "API"],
+				Count: 2,
+			},
+			body: "# Body",
+		});
+	});
+});
+
+describe("pushDatabase integration", () => {
+	it("pushes 3 rows with 2 patches and 1 create against a mocked Notion API", async () => {
+		const folder = Object.assign(Object.create(TFolder.prototype), { path: "_relay/bugs" });
+		const files = [
+			file("_relay/bugs/one.md", "---\nnotion-id: page-1\nStatus: Done\nScore: 1\n---\n# One"),
+			file("_relay/bugs/two.md", "---\nStatus: Todo\nScore: 2\n---\n# Two"),
+			file("_relay/bugs/three.md", "---\nStatus: Doing\nScore: 3\n---\n# Three"),
+		];
+		const app = {
+			vault: {
+				getAbstractFileByPath: vi.fn().mockReturnValue(folder),
+				getMarkdownFiles: vi.fn().mockReturnValue(files.map((entry) => entry.file)),
+				cachedRead: vi.fn(async (tfile: TFile) => files.find((entry) => entry.file === tfile)?.content ?? ""),
+			},
+		};
+		const update = vi.fn().mockResolvedValue({});
+		const create = vi.fn().mockResolvedValue({});
+		const client = {
+			databases: {
+				retrieve: vi.fn().mockResolvedValue({
+					title: [richText("Bugs")],
+					data_sources: [{ id: "source-1" }],
+				}),
+			},
+			dataSources: {
+				retrieve: vi.fn().mockResolvedValue({
+					properties: {
+						Name: { type: "title" },
+						Status: { type: "status" },
+						Score: { type: "number" },
+					},
+				}),
+				query: vi.fn().mockResolvedValue({
+					has_more: false,
+					results: [
+						page("page-1", "One"),
+						page("page-2", "Two"),
+					],
+				}),
+			},
+			pages: { update, create },
+		};
+
+		const result = await pushDatabase(app as never, client as never, "db-1", "_relay/bugs");
+
+		expect(update).toHaveBeenCalledTimes(2);
+		expect(update.mock.calls.map(([arg]) => arg.page_id)).toEqual(["page-1", "page-2"]);
+		expect(create).toHaveBeenCalledTimes(1);
+		expect(create.mock.calls[0][0].properties.Status).toEqual({ status: { name: "Doing" } });
+		expect(result).toMatchObject({
+			total: 3,
+			created: 1,
+			updated: 2,
+			failed: 0,
+		});
+	});
+
+	it("continues pushing rows after one Notion write fails", async () => {
+		const folder = Object.assign(Object.create(TFolder.prototype), { path: "_relay/bugs" });
+		const files = [
+			file("_relay/bugs/one.md", "---\nStatus: Done\n---\n# One"),
+			file("_relay/bugs/two.md", "---\nStatus: Todo\n---\n# Two"),
+		];
+		const app = {
+			vault: {
+				getAbstractFileByPath: vi.fn().mockReturnValue(folder),
+				getMarkdownFiles: vi.fn().mockReturnValue(files.map((entry) => entry.file)),
+				cachedRead: vi.fn(async (tfile: TFile) => files.find((entry) => entry.file === tfile)?.content ?? ""),
+			},
+		};
+		const client = {
+			databases: {
+				retrieve: vi.fn().mockResolvedValue({
+					title: [richText("Bugs")],
+					data_sources: [{ id: "source-1" }],
+				}),
+			},
+			dataSources: {
+				retrieve: vi.fn().mockResolvedValue({
+					properties: {
+						Name: { type: "title" },
+						Status: { type: "status" },
+					},
+				}),
+				query: vi.fn().mockResolvedValue({ has_more: false, results: [] }),
+			},
+			pages: {
+				update: vi.fn(),
+				create: vi.fn()
+					.mockRejectedValueOnce(new Error("Notion rejected row"))
+					.mockResolvedValueOnce({}),
+			},
+		};
+
+		const result = await pushDatabase(app as never, client as never, "db-1", "_relay/bugs");
+
+		expect(client.pages.create).toHaveBeenCalledTimes(2);
+		expect(result.created).toBe(1);
+		expect(result.failed).toBe(1);
+		expect(result.errors[0]).toContain("Notion rejected row");
+	});
+});
+
+function file(path: string, content: string): { file: TFile; content: string } {
+	const name = path.slice(path.lastIndexOf("/") + 1);
+	return {
+		file: Object.assign(Object.create(TFile.prototype), {
+			path,
+			name,
+			basename: name.replace(/\.md$/, ""),
+			extension: "md",
+		}),
+		content,
+	};
+}
+
+function page(id: string, title: string) {
+	return {
+		object: "page",
+		id,
+		properties: {
+			Name: {
+				type: "title",
+				title: [richText(title)],
+			},
+		},
+	};
+}
+
+function richText(content: string) {
+	return {
+		type: "text",
+		plain_text: content,
+		text: {
+			content,
+			link: null,
+		},
+		annotations: {
+			bold: false,
+			italic: false,
+			strikethrough: false,
+			underline: false,
+			code: false,
+			color: "default",
+		},
+		href: null,
+	};
+}
