@@ -1,3 +1,13 @@
+# Stonerelay
+
+Adversary's pull-path tool for Notion → Obsidian sync.
+
+**Forked from [ran-codes/obsidian-notion-database-sync](https://github.com/ran-codes/obsidian-notion-database-sync)**, MIT licensed. Extending with [planned: bidirectional sync, custom property mappings, etc.].
+
+---
+
+*Original README below.*
+
 # Notion Database Sync
 
 Sync Notion databases and pages into your Obsidian vault as Markdown files.

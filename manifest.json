@@ -1,10 +1,10 @@
 {
-	"id": "notion-database-sync",
-	"name": "Notion Database Sync",
-	"version": "0.1.0",
+	"id": "stonerelay",
+	"name": "Stonerelay",
+	"version": "0.1.0-adv",
 	"minAppVersion": "1.0.0",
-	"description": "Sync Notion databases and pages into your vault as Markdown.",
-	"author": "ranli",
-	"authorUrl": "https://github.com/ran-codes",
+	"description": "Sync Notion databases and pages into your vault as Markdown. | Adversary fork by adversary.design — extends with bidirectional sync, custom property mappings, Obsidian-native pull patterns. Forked from ran-codes/obsidian-notion-database-sync (MIT license).",
+	"author": "Adversary (adversary.design)",
+	"authorUrl": "https://adversary.design",
 	"isDesktopOnly": false
 }
