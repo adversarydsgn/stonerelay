@@ -2,6 +2,15 @@
 
 Fork-side changes to `stonerelay` (vs. upstream `ran-codes/obsidian-notion-database-sync`).
 
+## v0.7.6 — 2026-04-26
+
+Fixes pull failures for Notion rows whose titles are too long to use directly as vault filenames.
+
+**Behavior notes:**
+- Normal-length titles keep their existing sanitized filenames.
+- Overlong titles are truncated to a safe UTF-8 byte length and receive a short Notion page-id suffix to avoid collisions.
+- The full Notion row title remains available from the row content/properties; only the vault filename is shortened.
+
 ## v0.7.5 — 2026-04-26
 
 Restores Notion-title auto-fill for new database entries after pasting a Notion URL or ID.

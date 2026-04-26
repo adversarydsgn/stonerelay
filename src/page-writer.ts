@@ -5,6 +5,8 @@ import { App, normalizePath, TFile } from "obsidian";
 import { PageWriteOptions, PageWriteResult } from "./types";
 import { convertBlocksToMarkdown, convertRichText, fetchAllChildren } from "./block-converter";
 
+const MAX_FILENAME_STEM_BYTES = 180;
+
 export async function writeDatabaseEntry(
 	app: App,
 	options: PageWriteOptions
@@ -12,7 +14,7 @@ export async function writeDatabaseEntry(
 	const { client, page, outputFolder, databaseId } = options;
 
 	const title = getPageTitle(page);
-	const safeName = sanitizeFileName(title || "Untitled");
+	const safeName = safeFileNameForPage(title || "Untitled", page.id);
 	const filePath = normalizePath(`${outputFolder}/${safeName}.md`);
 
 	// Fetch all blocks
@@ -94,8 +96,34 @@ function simplifyRollupItem(item: Record<string, unknown>): unknown {
 	}
 }
 
+export function safeFileNameForPage(name: string, pageId: string): string {
+	const sanitized = sanitizeFileName(name);
+	if (utf8ByteLength(sanitized) <= MAX_FILENAME_STEM_BYTES) return sanitized;
+
+	const suffix = `--${pageId.replace(/-/g, "").slice(0, 8) || "notion"}`;
+	const prefix = truncateUtf8(sanitized, MAX_FILENAME_STEM_BYTES - utf8ByteLength(suffix))
+		.replace(/[\s.-]+$/g, "");
+	return `${prefix || "Untitled"}${suffix}`;
+}
+
 function sanitizeFileName(name: string): string {
 	return name.replace(/[\\/:*?"<>|]/g, "-").trim() || "Untitled";
+}
+
+function truncateUtf8(value: string, maxBytes: number): string {
+	let result = "";
+	let bytes = 0;
+	for (const char of value) {
+		const nextBytes = utf8ByteLength(char);
+		if (bytes + nextBytes > maxBytes) break;
+		result += char;
+		bytes += nextBytes;
+	}
+	return result;
+}
+
+function utf8ByteLength(value: string): number {
+	return new TextEncoder().encode(value).length;
 }
 
 function mapPropertiesToFrontmatter(
