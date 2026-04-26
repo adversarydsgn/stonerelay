@@ -69,6 +69,21 @@ Notion-managed `Created time` is preserved when a push updates the original row 
 
 Notion-managed `Last edited time` is not preservable. Notion updates it on every successful page update, so pushes should be expected to bump that timestamp.
 
+## Two-phase sync
+
+Stonerelay uses a two-phase configuration model for database sync direction.
+
+Phase 1 = initial seed (declare canonicality). New database entries must start with Pull or Push so the initial source is explicit. Pull means Notion is canonical for the first seed into the vault. Push means Obsidian is canonical for the first seed into Notion. Bidirectional is locked until the first full sync completes cleanly.
+
+Phase 2 = steady-state partnership (with conflict resolution). After a clean first sync, entries can switch to Bidirectional and choose `source_of_truth`: Notion wins, Obsidian wins, or manual merge. Manual merge stores conflicts with snapshots and opens a resolution view so rows are not auto-resolved.
+
+Sync safety behavior:
+
+- Per-row failures follow the rsync pattern: one failed row records `lastSyncStatus: partial` and `lastSyncErrors`, then later rows continue.
+- Cancellation uses an in-memory AbortController. Cancel stops at the next row boundary, writes final sync state once, and preserves partial work.
+- `data.json` writes use temp-file plus rename semantics to avoid partial config writes.
+- Each database can either nest files under `<DB-name>/` or sync flat into its configured vault folder.
+
 ## License
 
 [MIT](LICENSE)

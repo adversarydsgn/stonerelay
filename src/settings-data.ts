@@ -1,4 +1,7 @@
-import { DEFAULT_SETTINGS, NotionFreezeSettings, SyncDirection, SyncedDatabase } from "./types";
+import { promises as fs } from "fs";
+import { dirname } from "path";
+import { DEFAULT_SETTINGS, NotionFreezeSettings, SyncDirection, SyncError, SyncedDatabase } from "./types";
+import { applyPhaseTransition } from "./sync-state";
 
 export type DatabaseInput = Partial<SyncedDatabase> & {
 	name?: string;
@@ -14,7 +17,7 @@ export interface SyncAllResult {
 export type SyncDatabaseRunner = (
 	entry: SyncedDatabase,
 	outputFolder: string
-) => Promise<void>;
+) => Promise<{ failed: number; errors: string[] } | void>;
 
 export type SyncMode = "pull" | "push";
 
@@ -30,16 +33,30 @@ export function migrateData(data: Partial<NotionFreezeSettings> | null): NotionF
 		migrated.schemaVersion = 2;
 	}
 
-	migrated.databases = (migrated.databases ?? []).map((entry) =>
-		createDatabaseEntry({
+	migrated.pendingConflicts = migrated.pendingConflicts ?? [];
+	migrated.databases = (migrated.databases ?? []).map((entry) => {
+		const direction = normalizeDirection((entry as Partial<SyncedDatabase>).direction);
+		const lastSyncedAt = entry.lastSyncedAt ?? null;
+		return createDatabaseEntry({
 			...entry,
-			direction: normalizeDirection((entry as Partial<SyncedDatabase>).direction),
-			lastPulledAt: (entry as Partial<SyncedDatabase>).lastPulledAt ?? entry.lastSyncedAt ?? null,
+			direction,
+			lastPulledAt: (entry as Partial<SyncedDatabase>).lastPulledAt ?? lastSyncedAt,
 			lastPushedAt: (entry as Partial<SyncedDatabase>).lastPushedAt ?? null,
-		})
-	);
+			current_phase: entry.current_phase ?? (lastSyncedAt ? "phase_2" : "phase_1"),
+			initial_seed_direction: entry.initial_seed_direction ?? (lastSyncedAt ? initialSeedDirection(direction) : null),
+			source_of_truth: entry.source_of_truth ?? (lastSyncedAt ? sourceOfTruthForLegacy(direction) : null),
+			first_sync_completed_at: entry.first_sync_completed_at ?? lastSyncedAt,
+			nest_under_db_name: entry.nest_under_db_name ?? true,
+			current_sync_id: null,
+			lastCommittedRowId: entry.lastCommittedRowId ?? null,
+			lastSyncErrors: entry.lastSyncErrors ?? [],
+		});
+	});
 	if (migrated.schemaVersion < 3) {
 		migrated.schemaVersion = 3;
+	}
+	if (migrated.schemaVersion < 4) {
+		migrated.schemaVersion = 4;
 	}
 
 	return migrated;
@@ -112,17 +129,22 @@ export async function syncAll(
 	for (const entry of enabled) {
 		notice?.(`Syncing ${entry.name}...`);
 		try {
-			await runSync(entry, resolveOutputFolder(nextSettings, entry));
+			const result = await runSync(entry, resolveOutputFolder(nextSettings, entry));
 			ok++;
 			const now = new Date().toISOString();
-			nextSettings = updateDatabase(nextSettings, {
+			const errors = result
+				? syncErrorObjects(result.errors, mode, now)
+				: [];
+			const status = result && (result.failed > 0 || errors.length > 0) ? "partial" : "ok";
+			nextSettings = updateDatabase(nextSettings, applyPhaseTransition({
 				...entry,
 				lastSyncedAt: now,
 				lastPulledAt: mode === "pull" ? now : entry.lastPulledAt,
 				lastPushedAt: mode === "push" ? now : entry.lastPushedAt,
-				lastSyncStatus: "ok",
-				lastSyncError: undefined,
-			});
+				lastSyncStatus: status,
+				lastSyncError: errors.length > 0 ? errors.map((error) => error.error).join("\n").slice(0, 200) : undefined,
+				lastSyncErrors: errors,
+			}, status, errors, "full", now));
 		} catch (err) {
 			errored++;
 			nextSettings = updateDatabase(nextSettings, {
@@ -150,7 +172,23 @@ export function createDatabaseEntry(entry: Partial<SyncedDatabase>): SyncedDatab
 		lastSyncError: entry.lastSyncError,
 		lastPulledAt: entry.lastPulledAt ?? entry.lastSyncedAt ?? null,
 		lastPushedAt: entry.lastPushedAt ?? null,
+		current_phase: entry.current_phase ?? (entry.lastSyncedAt ? "phase_2" : "phase_1"),
+		initial_seed_direction: entry.initial_seed_direction ?? null,
+		source_of_truth: entry.source_of_truth ?? null,
+		first_sync_completed_at: entry.first_sync_completed_at ?? null,
+		nest_under_db_name: entry.nest_under_db_name ?? true,
+		current_sync_id: entry.current_sync_id ?? null,
+		lastCommittedRowId: entry.lastCommittedRowId ?? null,
+		lastSyncErrors: entry.lastSyncErrors ?? [],
 	};
+}
+
+export async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
+	await fs.mkdir(dirname(path), { recursive: true });
+	const tempPath = `${path}.tmp-${process.pid}-${Date.now()}`;
+	const payload = `${JSON.stringify(value, null, 2)}\n`;
+	await fs.writeFile(tempPath, payload, "utf8");
+	await fs.rename(tempPath, path);
 }
 
 function shouldRunForMode(direction: SyncDirection, mode: SyncMode): boolean {
@@ -161,8 +199,25 @@ function normalizeDirection(direction: unknown): SyncDirection {
 	return direction === "push" || direction === "bidirectional" ? direction : "pull";
 }
 
+function initialSeedDirection(direction: SyncDirection): "pull" | "push" {
+	return direction === "push" ? "push" : "pull";
+}
+
+function sourceOfTruthForLegacy(direction: SyncDirection): "notion" | "obsidian" {
+	return direction === "push" ? "obsidian" : "notion";
+}
+
 function errorMessage(err: unknown): string {
 	return (err instanceof Error ? err.message : String(err)).slice(0, 200);
+}
+
+function syncErrorObjects(messages: string[], mode: SyncMode, timestamp: string): SyncError[] {
+	return messages.map((message) => ({
+		rowId: message.split(":")[0]?.trim() || "unknown",
+		direction: mode,
+		error: message,
+		timestamp,
+	}));
 }
 
 function generateId(): string {

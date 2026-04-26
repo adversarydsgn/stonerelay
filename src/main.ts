@@ -1,17 +1,21 @@
 import { addIcon, App, Notice, Plugin, SuggestModal } from "obsidian";
-import { NotionFreezeSettings, DatabaseSyncResult, SyncedDatabase } from "./types";
+import { Conflict, NotionFreezeSettings, DatabaseSyncResult, SyncError, SyncRunOptions, SyncRunType, SyncedDatabase } from "./types";
 import { NotionFreezeSettingTab } from "./settings";
 import { FreezeModal, FrozenDatabase } from "./freeze-modal";
 import { createNotionClient, normalizeNotionId } from "./notion-client";
 import { freshDatabaseImport, refreshDatabase } from "./database-freezer";
 import { migrateData, resolveOutputFolder, syncAll, updateDatabase } from "./settings-data";
 import { pushDatabase } from "./push";
+import { applyPhaseTransition, syncErrorsFromMessages, SyncCancelled } from "./sync-state";
 
 export default class NotionFreezePlugin extends Plugin {
 	settings: NotionFreezeSettings = migrateData(null);
+	private syncControllers = new Map<string, AbortController>();
+	private cancellingAll = false;
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
+		await this.markInterruptedSyncs();
 		this.addSettingTab(new NotionFreezeSettingTab(this.app, this));
 
 		addIcon(
@@ -60,13 +64,45 @@ export default class NotionFreezePlugin extends Plugin {
 	async loadSettings(): Promise<void> {
 		const raw = await this.loadData();
 		this.settings = migrateData(raw);
-		if (!raw?.schemaVersion || raw.schemaVersion < 3) {
+		if (!raw?.schemaVersion || raw.schemaVersion < 4) {
 			await this.saveSettings();
 		}
 	}
 
 	async saveSettings(): Promise<void> {
-		await this.saveData(this.settings);
+		await this.saveSettingsAtomic(this.settings);
+	}
+
+	isSyncActive(entryId: string): boolean {
+		return this.syncControllers.has(entryId);
+	}
+
+	isCancellingAll(): boolean {
+		return this.cancellingAll;
+	}
+
+	hasActiveSyncs(): boolean {
+		return this.syncControllers.size > 0;
+	}
+
+	cancelSync(entryId: string): void {
+		const controller = this.syncControllers.get(entryId);
+		if (!controller) return;
+		controller.abort();
+		new Notice("Cancelling sync. Finishing this row first.");
+		(this.app.workspace as any).trigger("stonerelay:settings-updated");
+	}
+
+	cancelAllSyncs(): void {
+		if (this.syncControllers.size === 0) return;
+		this.cancellingAll = true;
+		for (const controller of this.syncControllers.values()) {
+			controller.abort();
+		}
+		if (this.syncControllers.size > 0) {
+			new Notice("Cancelling syncs. Finishing active rows first.");
+		}
+		(this.app.workspace as any).trigger("stonerelay:settings-updated");
 	}
 
 	private openFreezeModal(): void {
@@ -89,7 +125,7 @@ export default class NotionFreezePlugin extends Plugin {
 		const result = await syncAll(
 			this.settings,
 			async (entry, outputFolder) => {
-				await this.syncConfiguredDatabase(entry, outputFolder);
+				return this.syncConfiguredDatabase(entry, outputFolder);
 			},
 			(message) => new Notice(message)
 		);
@@ -102,10 +138,7 @@ export default class NotionFreezePlugin extends Plugin {
 		const result = await syncAll(
 			this.settings,
 			async (entry, outputFolder) => {
-				const result = await this.pushConfiguredDatabase(entry, outputFolder);
-				if (result.failed > 0) {
-					throw new Error(result.errors.join("\n") || `${result.failed} push rows failed`);
-				}
+				return this.pushConfiguredDatabase(entry, outputFolder);
 			},
 			(message) => new Notice(message),
 			"push"
@@ -135,74 +168,161 @@ export default class NotionFreezePlugin extends Plugin {
 		}, mode).open();
 	}
 
-	async syncOneConfiguredDatabase(entry: SyncedDatabase): Promise<void> {
+	async syncOneConfiguredDatabase(entry: SyncedDatabase, type: SyncRunType = "full", retryRowIds?: string[]): Promise<void> {
+		if (this.isSyncActive(entry.id)) {
+			new Notice(`Sync already running for ${entry.name}.`);
+			return;
+		}
+		const run = await this.beginSync(entry, type, retryRowIds);
 		try {
 			new Notice(`Syncing ${entry.name}...`);
-			await this.syncConfiguredDatabase(entry, resolveOutputFolder(this.settings, entry));
+			const result = await this.syncConfiguredDatabase(entry, resolveOutputFolder(this.settings, entry), run.options);
 			const now = new Date().toISOString();
-			this.settings = updateDatabase(this.settings, {
+			const errors = run.errors.length > 0
+				? run.errors
+				: syncErrorsFromMessages(result.errors, "pull", now);
+			const status = errors.length > 0 || result.failed > 0 ? "partial" : "ok";
+			this.settings = updateDatabase(this.settings, applyPhaseTransition({
 				...entry,
 				lastSyncedAt: now,
 				lastPulledAt: now,
-				lastSyncStatus: "ok",
-				lastSyncError: undefined,
-			});
+				lastSyncStatus: status,
+				lastSyncError: errors.length > 0 ? errors.map((error) => error.error).join("\n").slice(0, 200) : undefined,
+				lastSyncErrors: errors,
+				lastCommittedRowId: run.lastCommittedRowId,
+				current_sync_id: null,
+			}, status, errors, run.type, now));
 			await this.saveSettings();
 			(this.app.workspace as any).trigger("stonerelay:settings-updated");
 			new Notice(`Sync complete: ${entry.name}`);
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
-			this.settings = updateDatabase(this.settings, {
-				...entry,
-				lastSyncStatus: "error",
-				lastSyncError: message.slice(0, 200),
-			});
-			await this.saveSettings();
-			(this.app.workspace as any).trigger("stonerelay:settings-updated");
-			console.error("Notion sync error:", err);
-			new Notice(`Notion sync error: ${message}`);
-		}
-	}
-
-	async pushOneConfiguredDatabase(entry: SyncedDatabase): Promise<void> {
-		try {
-			new Notice(`Pushing ${entry.name}...`);
-			const result = await this.pushConfiguredDatabase(entry, resolveOutputFolder(this.settings, entry));
+			const cancelled = err instanceof SyncCancelled;
 			const now = new Date().toISOString();
 			this.settings = updateDatabase(this.settings, {
 				...entry,
+				lastSyncedAt: cancelled ? now : entry.lastSyncedAt,
+				lastSyncStatus: cancelled ? "cancelled" : "error",
+				lastSyncError: cancelled ? undefined : message.slice(0, 200),
+				lastSyncErrors: run.errors,
+				lastCommittedRowId: run.lastCommittedRowId,
+				current_sync_id: null,
+			});
+			await this.saveSettings();
+			(this.app.workspace as any).trigger("stonerelay:settings-updated");
+			if (cancelled) {
+				new Notice(`Sync cancelled: ${entry.name}`);
+			} else {
+				console.error("Notion sync error:", err);
+				new Notice(`Notion sync error: ${message}`);
+			}
+		} finally {
+			this.finishSync(entry.id);
+		}
+	}
+
+	async pushOneConfiguredDatabase(entry: SyncedDatabase, type: SyncRunType = "full", retryRowIds?: string[]): Promise<void> {
+		if (this.isSyncActive(entry.id)) {
+			new Notice(`Sync already running for ${entry.name}.`);
+			return;
+		}
+		const run = await this.beginSync(entry, type, retryRowIds);
+		try {
+			new Notice(`Pushing ${entry.name}...`);
+			const result = await this.pushConfiguredDatabase(entry, resolveOutputFolder(this.settings, entry), run.options);
+			const now = new Date().toISOString();
+			const errors = run.errors.length > 0
+				? run.errors
+				: syncErrorsFromMessages(result.errors, "push", now);
+			const status = errors.length > 0 || result.failed > 0 ? "partial" : "ok";
+			this.settings = updateDatabase(this.settings, applyPhaseTransition({
+				...entry,
 				lastSyncedAt: now,
 				lastPushedAt: now,
-				lastSyncStatus: result.failed > 0 ? "error" : "ok",
-				lastSyncError: result.errors.length > 0 ? result.errors.join("\n").slice(0, 200) : undefined,
-			});
+				lastSyncStatus: status,
+				lastSyncError: errors.length > 0 ? errors.map((error) => error.error).join("\n").slice(0, 200) : undefined,
+				lastSyncErrors: errors,
+				lastCommittedRowId: run.lastCommittedRowId,
+				current_sync_id: null,
+			}, status, errors, run.type, now));
 			await this.saveSettings();
 			(this.app.workspace as any).trigger("stonerelay:settings-updated");
 			new Notice(formatDatabaseResult(result.title, result, "pushed"));
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
+			const cancelled = err instanceof SyncCancelled;
+			const now = new Date().toISOString();
 			this.settings = updateDatabase(this.settings, {
 				...entry,
-				lastSyncStatus: "error",
-				lastSyncError: message.slice(0, 200),
+				lastSyncedAt: cancelled ? now : entry.lastSyncedAt,
+				lastSyncStatus: cancelled ? "cancelled" : "error",
+				lastSyncError: cancelled ? undefined : message.slice(0, 200),
+				lastSyncErrors: run.errors,
+				lastCommittedRowId: run.lastCommittedRowId,
+				current_sync_id: null,
 			});
 			await this.saveSettings();
 			(this.app.workspace as any).trigger("stonerelay:settings-updated");
-			console.error("Stonerelay push error:", err);
-			new Notice(`Stonerelay push error: ${message}`);
+			if (cancelled) {
+				new Notice(`Sync cancelled: ${entry.name}`);
+			} else {
+				console.error("Stonerelay push error:", err);
+				new Notice(`Stonerelay push error: ${message}`);
+			}
+		} finally {
+			this.finishSync(entry.id);
 		}
+	}
+
+	async retryFailedRows(entry: SyncedDatabase): Promise<void> {
+		if (entry.lastSyncErrors.length === 0) return;
+		const retryIds = entry.lastSyncErrors.map((error) => error.rowId);
+		if (entry.direction === "push") {
+			await this.pushOneConfiguredDatabase(entry, "retry", retryIds);
+			return;
+		}
+		await this.syncOneConfiguredDatabase(entry, "retry", retryIds);
+	}
+
+	async applyConflictResolution(conflict: Conflict, action: "pull" | "push"): Promise<void> {
+		const entry = this.settings.databases.find((candidate) => candidate.direction === "bidirectional");
+		if (!entry) throw new Error("No bidirectional database configured for conflict resolution.");
+		if (action === "pull") {
+			await this.syncOneConfiguredDatabase(entry, "retry", [conflict.rowId]);
+			return;
+		}
+		const vaultPath = typeof conflict.vaultSnapshot.path === "string"
+			? conflict.vaultSnapshot.path
+			: conflict.rowId;
+		await this.pushOneConfiguredDatabase(entry, "retry", [vaultPath]);
 	}
 
 	async syncConfiguredDatabase(
 		entry: SyncedDatabase,
-		outputFolder: string
+		outputFolder: string,
+		options: SyncRunOptions = {}
 	): Promise<DatabaseSyncResult> {
-		return this.syncDatabase(entry.databaseId, outputFolder, entry.lastSyncedAt);
+		return this.syncDatabase(entry.databaseId, outputFolder, entry.lastSyncedAt, entry, {
+			...options,
+			bidirectional: entry.direction === "bidirectional" && !options.retryRowIds
+				? {
+					sourceOfTruth: entry.source_of_truth,
+					lastSyncedAt: entry.lastSyncedAt,
+					onConflict: (conflict) => {
+						this.settings = {
+							...this.settings,
+							pendingConflicts: upsertConflict(this.settings.pendingConflicts, conflict),
+						};
+					},
+				}
+				: options.bidirectional,
+		});
 	}
 
 	async pushConfiguredDatabase(
 		entry: SyncedDatabase,
-		sourceFolder: string
+		sourceFolder: string,
+		options: SyncRunOptions = {}
 	): Promise<DatabaseSyncResult> {
 		if (!this.settings.apiKey) {
 			new Notice("Notion API key not set. Configure in plugin settings.");
@@ -216,7 +336,8 @@ export default class NotionFreezePlugin extends Plugin {
 				this.app,
 				client,
 				normalizeNotionId(entry.databaseId),
-				sourceFolder
+				sourceFolder,
+				options
 			);
 			notice.hide();
 			return result;
@@ -257,7 +378,9 @@ export default class NotionFreezePlugin extends Plugin {
 	private async syncDatabase(
 		databaseId: string,
 		outputFolder: string,
-		lastSyncedAt?: string | null
+		lastSyncedAt?: string | null,
+		entry?: SyncedDatabase,
+		options: SyncRunOptions = {}
 	): Promise<DatabaseSyncResult> {
 		if (!this.settings.apiKey) {
 			new Notice("Notion API key not set. Configure in plugin settings.");
@@ -267,7 +390,7 @@ export default class NotionFreezePlugin extends Plugin {
 		const normalizedId = normalizeNotionId(databaseId);
 		const existing = this.findFrozenDatabase(normalizedId);
 		if (existing) {
-			return this.refreshFrozenDatabase(existing, lastSyncedAt);
+			return this.refreshFrozenDatabase(existing, lastSyncedAt, options);
 		}
 
 		const client = createNotionClient(this.settings.apiKey);
@@ -292,6 +415,10 @@ export default class NotionFreezePlugin extends Plugin {
 							notice.hide();
 							break;
 					}
+				},
+				{
+					...options,
+					nestUnderDbName: entry?.nest_under_db_name ?? true,
 				}
 			);
 			notice.hide();
@@ -304,7 +431,8 @@ export default class NotionFreezePlugin extends Plugin {
 
 	private async refreshFrozenDatabase(
 		db: FrozenDatabase,
-		lastSyncedAt?: string | null
+		lastSyncedAt?: string | null,
+		options: SyncRunOptions = {}
 	): Promise<DatabaseSyncResult> {
 		if (!this.settings.apiKey) {
 			new Notice("Notion API key not set. Configure in plugin settings.");
@@ -342,7 +470,8 @@ export default class NotionFreezePlugin extends Plugin {
 							notice.hide();
 							break;
 					}
-				}
+				},
+				options
 			);
 			notice.hide();
 			return result;
@@ -376,6 +505,112 @@ export default class NotionFreezePlugin extends Plugin {
 
 		return dbMap.get(databaseId) ?? null;
 	}
+
+	private async beginSync(entry: SyncedDatabase, type: SyncRunType = "full", retryRowIds?: string[]): Promise<{
+		type: SyncRunType;
+		errors: SyncError[];
+		get lastCommittedRowId(): string | null;
+		options: SyncRunOptions;
+	}> {
+		const controller = new AbortController();
+		const syncId = crypto.randomUUID();
+		const errors: SyncError[] = [];
+		const state = { lastCommittedRowId: entry.lastCommittedRowId };
+		this.syncControllers.set(entry.id, controller);
+		this.settings = updateDatabase(this.settings, {
+			...entry,
+			current_sync_id: syncId,
+			lastSyncErrors: type === "full" ? [] : entry.lastSyncErrors,
+		});
+		await this.saveSettings();
+		return {
+			type,
+			errors,
+			get lastCommittedRowId() {
+				return state.lastCommittedRowId;
+			},
+			options: {
+				signal: controller.signal,
+				startAfterRowId: entry.lastSyncStatus === "cancelled" ? entry.lastCommittedRowId : null,
+				retryRowIds: type === "retry" ? retryRowIds ?? entry.lastSyncErrors.map((error) => error.rowId) : undefined,
+				onRowCommitted: (rowId) => {
+					state.lastCommittedRowId = rowId;
+				},
+				onRowError: (error) => {
+					errors.push(error);
+				},
+			},
+		};
+	}
+
+	private finishSync(entryId: string): void {
+		this.syncControllers.delete(entryId);
+		if (this.cancellingAll && this.syncControllers.size === 0) {
+			this.cancellingAll = false;
+		}
+		(this.app.workspace as any).trigger("stonerelay:settings-updated");
+	}
+
+	private async markInterruptedSyncs(): Promise<void> {
+		let changed = false;
+		this.settings = {
+			...this.settings,
+			databases: this.settings.databases.map((entry) => {
+				if (!entry.current_sync_id) return entry;
+				changed = true;
+				return {
+					...entry,
+					current_sync_id: null,
+					lastSyncStatus: "interrupted",
+					lastSyncError: "Previous sync was interrupted. Resume from cursor or restart from beginning.",
+				};
+			}),
+		};
+		if (changed) {
+			await this.saveSettings();
+			new Notice("A previous sync was interrupted. Resume from cursor or restart from beginning.");
+		}
+	}
+
+	private async saveSettingsAtomic(settings: NotionFreezeSettings): Promise<void> {
+		const adapter = this.app.vault.adapter as {
+			write?: (path: string, data: string) => Promise<void>;
+			read?: (path: string) => Promise<string>;
+			rename?: (from: string, to: string) => Promise<void>;
+			remove?: (path: string) => Promise<void>;
+		};
+		if (!adapter.write) {
+			console.warn("Stonerelay: Obsidian adapter does not expose write(); atomic data.json writes are unavailable.");
+			throw new Error("Atomic data.json writes are unavailable on this Obsidian adapter.");
+		}
+		const dataPath = `.obsidian/plugins/${this.manifest.id}/data.json`;
+		const tempPath = `${dataPath}.tmp-${Date.now()}`;
+		const payload = `${JSON.stringify(settings, null, 2)}\n`;
+		await adapter.write(tempPath, payload);
+		if (!adapter.rename) {
+			console.warn("Stonerelay: Obsidian adapter lacks rename(); using write-confirm-remove fallback for data.json.");
+			if (adapter.read) {
+				const tempPayload = await adapter.read(tempPath);
+				if (tempPayload !== payload) throw new Error("Atomic settings write verification failed.");
+			}
+			await adapter.write(dataPath, payload);
+			await adapter.remove?.(tempPath).catch(() => undefined);
+			return;
+		}
+		try {
+			await adapter.rename(tempPath, dataPath);
+		} catch (err) {
+			await adapter.remove?.(tempPath).catch(() => undefined);
+			throw err;
+		}
+	}
+}
+
+function upsertConflict(conflicts: Conflict[], conflict: Conflict): Conflict[] {
+	return [
+		...conflicts.filter((existing) => existing.rowId !== conflict.rowId),
+		conflict,
+	];
 }
 
 class DatabasePickerModal extends SuggestModal<SyncedDatabase> {

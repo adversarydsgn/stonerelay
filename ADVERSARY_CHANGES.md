@@ -2,6 +2,37 @@
 
 Fork-side changes to `stonerelay` (vs. upstream `ran-codes/obsidian-notion-database-sync`).
 
+## v0.7.0 — 2026-04-25
+
+Adds two-phase configuration for safe source-of-truth bidirectional sync.
+
+**Two-phase behavior:**
+
+| Area | Change |
+|---|---|
+| Phase 1 | New database entries start as initial seed configs and require Pull or Push canonicality |
+| Phase 2 | A clean first sync unlocks Bidirectional plus `source_of_truth` selection |
+| Source of truth | Supports Notion wins, Obsidian wins, and manual merge for conflict handling |
+| Conflict storage | Manual merge stores row snapshots in `pendingConflicts` and opens a minimal resolution view |
+| Schema migration | Bumps `schemaVersion` to 4; migrated synced entries become Phase 2, unsynced entries remain Phase 1 |
+
+**Safety behavior:**
+
+| Area | Change |
+|---|---|
+| Cancellation | In-flight syncs use AbortController and exit at row boundaries |
+| Cancel All | Cancels every active in-memory controller; sync workers write their own final state |
+| Per-row failures | A failed row records `lastSyncErrors` and continues later rows; final status is `partial` |
+| Resume cursor | `lastCommittedRowId` records the last successful row commit for cancellation/interruption recovery |
+| Atomic config writes | `data.json` writes now use temp-file plus rename semantics where the Obsidian adapter exposes write/rename |
+| Folder layout | Per-database `nest_under_db_name` controls nested vs flat vault output |
+
+**Behavior notes:**
+- Phase 1 transitions to Phase 2 only when a full sync ends with `lastSyncStatus: "ok"` and zero row errors.
+- Cancelled, partial, errored, interrupted, and retry-only runs stay in Phase 1.
+- Existing v0.6 entries keep their prior behavior through migration defaults: nested folders, no active sync id, empty row-error list, and derived source-of-truth.
+- Live Notion validation was not run; test coverage uses local Vitest harnesses and mocked Notion API responses.
+
 ## v0.6.5 — 2026-04-25
 
 Adds pull-side block conversion for leaked Notion `heading_4`, `heading_5`, and `heading_6` blocks.

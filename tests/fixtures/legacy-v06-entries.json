@@ -1,0 +1,31 @@
+{
+  "apiKey": "ntn_test",
+  "defaultOutputFolder": "_relay",
+  "schemaVersion": 3,
+  "databases": [
+    {
+      "id": "legacy-synced-pull",
+      "name": "Project Notes",
+      "databaseId": "5123456789ab4def8123456789abcdef",
+      "outputFolder": "_relay/library",
+      "direction": "pull",
+      "enabled": true,
+      "lastSyncedAt": "2026-04-24T10:00:00.000Z",
+      "lastSyncStatus": "ok",
+      "lastPulledAt": "2026-04-24T10:00:00.000Z",
+      "lastPushedAt": null
+    },
+    {
+      "id": "legacy-unsynced-push",
+      "name": "Daily Log",
+      "databaseId": "44d61ec214e680f3bc3ae42d4ab6ffc8",
+      "outputFolder": "_relay/sessions",
+      "direction": "push",
+      "enabled": true,
+      "lastSyncedAt": null,
+      "lastSyncStatus": "never",
+      "lastPulledAt": null,
+      "lastPushedAt": null
+    }
+  ]
+}

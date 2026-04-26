@@ -5,7 +5,9 @@ import {
 	PageObjectResponse,
 } from "@notionhq/client/build/src/api-endpoints";
 import { App, normalizePath, TFile, TFolder } from "obsidian";
-import { DatabaseSyncResult, ProgressCallback } from "./types";
+import { DatabaseSyncResult, ProgressCallback, SyncRunOptions } from "./types";
+import { assertNotCancelled, classifyError, commitRow } from "./sync-state";
+import { decideBidirectionalAction } from "./conflict-resolution";
 import { notionRequest } from "./notion-client";
 import { convertRichText } from "./block-converter";
 import { writeDatabaseEntry } from "./page-writer";
@@ -17,7 +19,8 @@ export async function freshDatabaseImport(
 	client: Client,
 	databaseId: string,
 	outputFolder: string,
-	onProgress?: ProgressCallback
+	onProgress?: ProgressCallback,
+	options: SyncRunOptions = {}
 ): Promise<DatabaseSyncResult> {
 	// Validate database exists
 	const database = (await notionRequest(() =>
@@ -35,7 +38,9 @@ export async function freshDatabaseImport(
 	}
 
 	const safeName = dbTitle.replace(/[\\/:*?"<>|]/g, "-").trim() || "Untitled Database";
-	const folderPath = normalizePath(`${outputFolder}/${safeName}`);
+	const folderPath = options.nestUnderDbName === false
+		? normalizePath(outputFolder)
+		: normalizePath(`${outputFolder}/${safeName}`);
 
 	// Get data source
 	if (!database.data_sources || database.data_sources.length === 0) {
@@ -65,17 +70,29 @@ export async function freshDatabaseImport(
 
 	// Import all entries
 	let current = 0;
+	let skippingUntilCursor = Boolean(options.startAfterRowId);
 	for (const entry of entries) {
+		if (skippingUntilCursor) {
+			if (entry.id === options.startAfterRowId) {
+				skippingUntilCursor = false;
+			}
+			continue;
+		}
+		if (options.retryRowIds && !options.retryRowIds.includes(entry.id)) continue;
+		assertNotCancelled(options.signal);
 		current++;
 		onProgress?.({ phase: "importing", current, total });
 
 		try {
-			const result = await writeDatabaseEntry(app, {
-				client,
-				page: entry,
-				outputFolder: folderPath,
-				databaseId,
-			});
+			const result = await commitRow(entry.id, () =>
+				writeDatabaseEntry(app, {
+					client,
+					page: entry,
+					outputFolder: folderPath,
+					databaseId,
+				}),
+				options.onRowCommitted
+			);
 
 			if (result.status === "created") created++;
 			else updated++;
@@ -83,6 +100,13 @@ export async function freshDatabaseImport(
 			failed++;
 			const msg = `Entry ${entry.id}: ${err instanceof Error ? err.message : String(err)}`;
 			errors.push(msg);
+			options.onRowError?.({
+				rowId: entry.id,
+				direction: "pull",
+				error: msg,
+				errorCode: classifyError(msg),
+				timestamp: new Date().toISOString(),
+			});
 			console.error(`Notion sync: Failed to import entry ${entry.id}:`, err);
 		}
 	}
@@ -107,7 +131,8 @@ export async function refreshDatabase(
 	client: Client,
 	db: FrozenDatabase,
 	lastSyncedAt?: string | null,
-	onProgress?: ProgressCallback
+	onProgress?: ProgressCallback,
+	options: SyncRunOptions = {}
 ): Promise<DatabaseSyncResult> {
 	// Query fresh metadata
 	onProgress?.({ phase: "querying" });
@@ -172,17 +197,56 @@ export async function refreshDatabase(
 	const errors: string[] = [];
 
 	let current = 0;
+	let skippingUntilCursor = Boolean(options.startAfterRowId);
 	for (const entry of staleEntries) {
+		if (skippingUntilCursor) {
+			if (entry.id === options.startAfterRowId) {
+				skippingUntilCursor = false;
+			}
+			continue;
+		}
+		if (options.retryRowIds && !options.retryRowIds.includes(entry.id)) continue;
+		assertNotCancelled(options.signal);
 		current++;
 		onProgress?.({ phase: "importing", current, total: staleEntries.length });
 
 		try {
-			const result = await writeDatabaseEntry(app, {
-				client,
-				page: entry,
-				outputFolder: db.folderPath,
-				databaseId: db.databaseId,
-			});
+			const localFile = localFiles.get(entry.id);
+			if (options.bidirectional && localFile) {
+				const decision = decideBidirectionalAction({
+					rowId: entry.id,
+					notionChanged: true,
+					vaultChanged: vaultChangedSince(localFile, options.bidirectional.lastSyncedAt),
+					sourceOfTruth: options.bidirectional.sourceOfTruth,
+					notionEditedAt: entry.last_edited_time,
+					vaultEditedAt: new Date(localFile.stat.mtime).toISOString(),
+					notionSnapshot: snapshotNotionPage(entry),
+					vaultSnapshot: snapshotVaultFile(app, localFile),
+					detectedAt: new Date().toISOString(),
+				});
+				if (decision.action === "skip") {
+					skippedCount++;
+					continue;
+				}
+				if (decision.action === "conflict" && decision.conflict) {
+					options.bidirectional.onConflict?.(decision.conflict);
+					skippedCount++;
+					continue;
+				}
+				if (decision.action === "push") {
+					skippedCount++;
+					continue;
+				}
+			}
+			const result = await commitRow(entry.id, () =>
+				writeDatabaseEntry(app, {
+					client,
+					page: entry,
+					outputFolder: db.folderPath,
+					databaseId: db.databaseId,
+				}),
+				options.onRowCommitted
+			);
 
 			if (result.status === "created") created++;
 			else updated++;
@@ -190,6 +254,13 @@ export async function refreshDatabase(
 			failed++;
 			const msg = `Entry ${entry.id}: ${err instanceof Error ? err.message : String(err)}`;
 			errors.push(msg);
+			options.onRowError?.({
+				rowId: entry.id,
+				direction: "pull",
+				error: msg,
+				errorCode: classifyError(msg),
+				timestamp: new Date().toISOString(),
+			});
 			console.error(`Notion sync: Failed to refresh entry ${entry.id}:`, err);
 		}
 	}
@@ -215,6 +286,29 @@ export async function refreshDatabase(
 		deleted,
 		failed,
 		errors,
+	};
+}
+
+function vaultChangedSince(file: TFile, lastSyncedAt?: string | null): boolean {
+	if (!lastSyncedAt) return true;
+	const lastSynced = Date.parse(lastSyncedAt);
+	return Number.isNaN(lastSynced) ? true : file.stat.mtime > lastSynced;
+}
+
+function snapshotNotionPage(page: PageObjectResponse): Record<string, unknown> {
+	return {
+		id: page.id,
+		lastEditedTime: page.last_edited_time,
+		properties: page.properties,
+	};
+}
+
+function snapshotVaultFile(app: App, file: TFile): Record<string, unknown> {
+	const cache = app.metadataCache.getFileCache(file);
+	return {
+		path: file.path,
+		mtime: file.stat.mtime,
+		frontmatter: cache?.frontmatter ?? {},
 	};
 }
 

@@ -4,9 +4,10 @@ import {
 	PageObjectResponse,
 } from "@notionhq/client/build/src/api-endpoints";
 import { App, normalizePath, TFile, TFolder } from "obsidian";
-import { DatabaseSyncResult } from "./types";
+import { DatabaseSyncResult, SyncRunOptions } from "./types";
 import { convertRichText } from "./block-converter";
 import { notionRequest } from "./notion-client";
+import { assertNotCancelled, classifyError, commitRow } from "./sync-state";
 
 const CHUNK_LIMIT = 1900;
 const INTERNAL_FRONTMATTER_KEYS = new Set([
@@ -50,7 +51,8 @@ export async function pushDatabase(
 	app: App,
 	client: Client,
 	databaseId: string,
-	sourceFolder: string
+	sourceFolder: string,
+	options: SyncRunOptions = {}
 ): Promise<DatabaseSyncResult> {
 	const database = (await notionRequest(() =>
 		client.databases.retrieve({ database_id: databaseId })
@@ -80,8 +82,17 @@ export async function pushDatabase(
 	let failed = 0;
 	let skipped = 0;
 	const errors: string[] = [];
+	let skippingUntilCursor = Boolean(options.startAfterRowId);
 
 	for (const doc of docs) {
+		if (skippingUntilCursor) {
+			if (doc.file.path === options.startAfterRowId) {
+				skippingUntilCursor = false;
+			}
+			continue;
+		}
+		if (options.retryRowIds && !options.retryRowIds.includes(doc.file.path)) continue;
+		assertNotCancelled(options.signal);
 		const notionId = typeof doc.props["notion-id"] === "string" ? doc.props["notion-id"] : null;
 		if (notionId && !byId.has(notionId) && !byId.has(compactNotionId(notionId))) {
 			skipped++;
@@ -98,20 +109,22 @@ export async function pushDatabase(
 
 		try {
 			if (existingId) {
-				const page = await notionRequest(() =>
-					client.pages.update({
+				const page = await commitRow(doc.file.path, () =>
+					notionRequest(() => client.pages.update({
 						page_id: existingId,
 						properties,
-					} as never)
+					} as never)),
+					options.onRowCommitted
 				);
 				await refreshFrontmatterNotionId(app, doc, getReturnedPageId(page) ?? existingId);
 				updated++;
 			} else {
-				const page = await notionRequest(() =>
-					client.pages.create({
+				const page = await commitRow(doc.file.path, () =>
+					notionRequest(() => client.pages.create({
 						parent: { database_id: databaseId },
 						properties,
-					} as never)
+					} as never)),
+					options.onRowCommitted
 				);
 				const returnedId = getReturnedPageId(page);
 				if (returnedId) {
@@ -123,6 +136,13 @@ export async function pushDatabase(
 			failed++;
 			const msg = `${doc.file.path}: ${err instanceof Error ? err.message : String(err)}`;
 			errors.push(msg);
+			options.onRowError?.({
+				rowId: doc.file.path,
+				direction: "push",
+				error: msg,
+				errorCode: classifyError(msg),
+				timestamp: new Date().toISOString(),
+			});
 			console.error("Stonerelay push error:", err);
 		}
 	}

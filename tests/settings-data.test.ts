@@ -16,7 +16,8 @@ function settings(databases: SyncedDatabase[] = []): NotionFreezeSettings {
 		apiKey: "ntn_test",
 		defaultOutputFolder: "_relay",
 		databases,
-		schemaVersion: 3,
+		pendingConflicts: [],
+		schemaVersion: 4,
 	};
 }
 
@@ -33,6 +34,14 @@ function database(overrides: Partial<SyncedDatabase> = {}): SyncedDatabase {
 		lastSyncError: overrides.lastSyncError,
 		lastPulledAt: overrides.lastPulledAt ?? overrides.lastSyncedAt ?? null,
 		lastPushedAt: overrides.lastPushedAt ?? null,
+		current_phase: overrides.current_phase ?? "phase_1",
+		initial_seed_direction: overrides.initial_seed_direction ?? null,
+		source_of_truth: overrides.source_of_truth ?? null,
+		first_sync_completed_at: overrides.first_sync_completed_at ?? null,
+		nest_under_db_name: overrides.nest_under_db_name ?? true,
+		current_sync_id: overrides.current_sync_id ?? null,
+		lastCommittedRowId: overrides.lastCommittedRowId ?? null,
+		lastSyncErrors: overrides.lastSyncErrors ?? [],
 	};
 }
 
@@ -46,7 +55,8 @@ describe("settings data migration", () => {
 		expect(migrated.apiKey).toBe("ntn_existing");
 		expect(migrated.defaultOutputFolder).toBe("Notion");
 		expect(migrated.databases).toEqual([]);
-		expect(migrated.schemaVersion).toBe(3);
+		expect(migrated.schemaVersion).toBe(4);
+		expect(migrated.pendingConflicts).toEqual([]);
 	});
 
 	it("is idempotent on already migrated data", () => {
@@ -61,7 +71,7 @@ describe("settings data migration", () => {
 			lastPulledAt: null,
 			lastPushedAt: null,
 		});
-		expect(migrated.schemaVersion).toBe(3);
+		expect(migrated.schemaVersion).toBe(4);
 	});
 
 	it("migrates v0.5 entries to schema 3 without data loss", () => {
@@ -80,7 +90,7 @@ describe("settings data migration", () => {
 			} as SyncedDatabase],
 		});
 
-		expect(migrated.schemaVersion).toBe(3);
+		expect(migrated.schemaVersion).toBe(4);
 		expect(migrated.databases[0]).toMatchObject({
 			id: "db-1",
 			name: "Bugs",
@@ -90,6 +100,34 @@ describe("settings data migration", () => {
 			lastSyncedAt: "2026-04-24T10:00:00.000Z",
 			lastPulledAt: "2026-04-24T10:00:00.000Z",
 			lastPushedAt: null,
+			current_phase: "phase_2",
+			initial_seed_direction: "pull",
+			source_of_truth: "notion",
+			first_sync_completed_at: "2026-04-24T10:00:00.000Z",
+			nest_under_db_name: true,
+			current_sync_id: null,
+			lastCommittedRowId: null,
+			lastSyncErrors: [],
+		});
+	});
+
+	it("migrates unsynced v0.6 entries to phase 1", () => {
+		const migrated = migrateData({
+			apiKey: "ntn_existing",
+			defaultOutputFolder: "_relay",
+			schemaVersion: 3,
+			databases: [database({ id: "db-1", direction: "push", lastSyncedAt: null })],
+		});
+
+		expect(migrated.databases[0]).toMatchObject({
+			current_phase: "phase_1",
+			initial_seed_direction: null,
+			source_of_truth: null,
+			first_sync_completed_at: null,
+			nest_under_db_name: true,
+			current_sync_id: null,
+			lastCommittedRowId: null,
+			lastSyncErrors: [],
 		});
 	});
 });
@@ -155,6 +193,18 @@ describe("syncAll", () => {
 		expect(result.settings.databases[0].lastPushedAt).toBeNull();
 		expect(result.settings.databases[1].lastPushedAt).toBeTruthy();
 		expect(result.settings.databases[2].lastPushedAt).toBeTruthy();
+	});
+
+	it("marks sync results with row failures as partial", async () => {
+		const first = database({ id: "one", name: "One" });
+		const result = await syncAll(settings([first]), async () => ({
+			failed: 1,
+			errors: ["row-1: Notion rejected row"],
+		}));
+
+		expect(result.settings.databases[0].lastSyncStatus).toBe("partial");
+		expect(result.settings.databases[0].lastSyncErrors).toHaveLength(1);
+		expect(result.settings.databases[0].lastSyncErrors[0].rowId).toBe("row-1");
 	});
 
 	it("shows a notice when no enabled databases exist", async () => {
