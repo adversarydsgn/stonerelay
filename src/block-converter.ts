@@ -283,7 +283,10 @@ async function maybeConvertChildren(
 ): Promise<string> {
 	if (!block.has_children) return "";
 
-	const children = await fetchAllChildren(ctx.client, block.id);
+	const children = await fetchNestedChildren(ctx.client, block.id);
+	if (children === null) {
+		return `\n<!-- Stonerelay: skipped inaccessible Notion child block ${block.id} -->`;
+	}
 	const childMd = await convertBlocksToMarkdown(children, ctx);
 	if (!childMd) return "";
 	return "\n" + childMd;
@@ -313,6 +316,26 @@ export async function fetchAllChildren(
 	} while (cursor);
 
 	return blocks;
+}
+
+async function fetchNestedChildren(
+	client: Client,
+	blockId: string
+): Promise<BlockObjectResponse[] | null> {
+	try {
+		return await fetchAllChildren(client, blockId);
+	} catch (err) {
+		if (isNotionObjectNotFound(err)) {
+			console.warn(`Stonerelay: skipped inaccessible Notion child block ${blockId}.`);
+			return null;
+		}
+		throw err;
+	}
+}
+
+function isNotionObjectNotFound(err: unknown): boolean {
+	const candidate = err as { code?: unknown; status?: unknown };
+	return candidate.code === "object_not_found" || candidate.status === 404;
 }
 
 export function convertRichText(richTexts: RichTextItemResponse[]): string {

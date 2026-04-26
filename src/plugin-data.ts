@@ -25,7 +25,16 @@ export async function writePluginDataAtomic(
 	try {
 		await adapter.rename(tempPath, dataPath);
 	} catch (err) {
-		await writeConfirmedFallback(adapter, tempPath, dataPath, payload, `Stonerelay: adapter rename failed (${errorMessage(err)}); using write-confirm-remove fallback for data.json.`);
+		const message = errorMessage(err);
+		await writeConfirmedFallback(
+			adapter,
+			tempPath,
+			dataPath,
+			payload,
+			isDestinationExistsError(message)
+				? null
+				: `Stonerelay: adapter rename failed (${message}); using write-confirm-remove fallback for data.json.`
+		);
 	}
 }
 
@@ -34,9 +43,9 @@ async function writeConfirmedFallback(
 	tempPath: string,
 	dataPath: string,
 	payload: string,
-	message: string
+	message: string | null
 ): Promise<void> {
-	console.warn(message);
+	if (message) console.warn(message);
 	if (adapter.read) {
 		const tempPayload = await adapter.read(tempPath);
 		if (tempPayload !== payload) throw new Error("Atomic settings write verification failed.");
@@ -47,4 +56,8 @@ async function writeConfirmedFallback(
 
 function errorMessage(err: unknown): string {
 	return err instanceof Error ? err.message : String(err);
+}
+
+function isDestinationExistsError(message: string): boolean {
+	return /destination file already exists|target exists|file already exists/i.test(message);
 }

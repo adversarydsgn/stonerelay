@@ -1,6 +1,6 @@
 import { Client } from "@notionhq/client";
 import { BlockObjectResponse } from "@notionhq/client/build/src/api-endpoints";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { convertBlocksToMarkdown } from "../src/block-converter";
 
 describe("heading block conversion", () => {
@@ -45,6 +45,39 @@ describe("heading block conversion", () => {
 	});
 });
 
+describe("inaccessible child blocks", () => {
+	test("nested object_not_found children are skipped without failing the row", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		try {
+			const markdown = await convertBlocksToMarkdown([
+				paragraphBlock("parent-block", "Visible text", true),
+			], {
+				client: {
+					blocks: {
+						children: {
+							list: async () => {
+								const err = new Error("Could not find block with ID: parent-block") as Error & {
+									code: string;
+									status: number;
+								};
+								err.code = "object_not_found";
+								err.status = 404;
+								throw err;
+							},
+						},
+					},
+				} as unknown as Client,
+				indentLevel: 0,
+			});
+
+			expect(markdown).toContain("Visible text");
+			expect(markdown).toContain("skipped inaccessible Notion child block parent-block");
+		} finally {
+			warn.mockRestore();
+		}
+	});
+});
+
 async function expectHeading(type: string, text: string, expected: string) {
 	const markdown = await convertBlocksToMarkdown([
 		headingBlock(type, [text]),
@@ -70,6 +103,26 @@ function headingBlock(type: string, plainTexts: string[]): BlockObjectResponse {
 			rich_text: plainTexts.map(richText),
 			color: "default",
 			is_toggleable: false,
+		},
+	} as unknown as BlockObjectResponse;
+}
+
+function paragraphBlock(id: string, text: string, hasChildren: boolean): BlockObjectResponse {
+	return {
+		object: "block",
+		id,
+		parent: { type: "page_id", page_id: "page-1" },
+		created_time: "2026-04-25T00:00:00.000Z",
+		last_edited_time: "2026-04-25T00:00:00.000Z",
+		created_by: { object: "user", id: "user-1" },
+		last_edited_by: { object: "user", id: "user-1" },
+		has_children: hasChildren,
+		archived: false,
+		in_trash: false,
+		type: "paragraph",
+		paragraph: {
+			rich_text: [richText(text)],
+			color: "default",
 		},
 	} as unknown as BlockObjectResponse;
 }

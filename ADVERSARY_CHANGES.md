@@ -2,6 +2,16 @@
 
 Fork-side changes to `stonerelay` (vs. upstream `ran-codes/obsidian-notion-database-sync`).
 
+## v0.7.7 — 2026-04-26
+
+Fixes noisy retry loops when Obsidian rejects plugin `data.json` rename-over-existing and a Notion row contains an inaccessible nested child block.
+
+**Behavior notes:**
+- The confirmed write-confirm-remove fallback remains in place for `data.json`, but the expected existing-destination adapter behavior no longer logs a warning on every settings save.
+- Unexpected adapter rename failures still warn before using the fallback path.
+- Nested Notion child blocks that return `object_not_found` are skipped with a markdown comment so the parent row can still refresh.
+- Top-level Notion page or database access failures still fail the row, preserving the sharing/permissions signal.
+
 ## v0.7.6 — 2026-04-26
 
 Fixes pull failures for Notion rows whose titles are too long to use directly as vault filenames.

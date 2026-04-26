@@ -132,41 +132,82 @@ describe("atomic-rename data.json writes", () => {
 			[".obsidian/plugins/stonerelay/data.json", "{\"schemaVersion\":3}\n"],
 		]);
 		const writes: string[] = [];
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
-		await writePluginDataAtomic(
-			{
-				write: async (path, data) => {
-					writes.push(path);
-					files.set(path, data);
+		try {
+			await writePluginDataAtomic(
+				{
+					write: async (path, data) => {
+						writes.push(path);
+						files.set(path, data);
+					},
+					read: async (path) => {
+						const value = files.get(path);
+						if (value === undefined) throw new Error(`missing ${path}`);
+						return value;
+					},
+					rename: async (from, to) => {
+						const value = files.get(from);
+						if (value === undefined) throw new Error(`missing ${from}`);
+						if (files.has(to)) throw new Error(`target exists ${to}`);
+						files.delete(from);
+						files.set(to, value);
+					},
+					remove: async (path) => {
+						files.delete(path);
+					},
 				},
-				read: async (path) => {
-					const value = files.get(path);
-					if (value === undefined) throw new Error(`missing ${path}`);
-					return value;
-				},
-				rename: async (from, to) => {
-					const value = files.get(from);
-					if (value === undefined) throw new Error(`missing ${from}`);
-					if (files.has(to)) throw new Error(`target exists ${to}`);
-					files.delete(from);
-					files.set(to, value);
-				},
-				remove: async (path) => {
-					files.delete(path);
-				},
-			},
-			".obsidian/plugins/stonerelay/data.json",
-			"{\"schemaVersion\":4}\n",
-			async () => {
-				throw new Error("fallback should not be used");
-			}
-		);
+				".obsidian/plugins/stonerelay/data.json",
+				"{\"schemaVersion\":4}\n",
+				async () => {
+					throw new Error("fallback should not be used");
+				}
+			);
 
-		expect(files.get(".obsidian/plugins/stonerelay/data.json")).toBe("{\"schemaVersion\":4}\n");
-		expect([...files.keys()].some((path) => path.includes(".tmp-"))).toBe(false);
-		expect(writes).toHaveLength(2);
-		expect(writes[0]).toContain(".tmp-");
-		expect(writes[1]).toBe(".obsidian/plugins/stonerelay/data.json");
+			expect(files.get(".obsidian/plugins/stonerelay/data.json")).toBe("{\"schemaVersion\":4}\n");
+			expect([...files.keys()].some((path) => path.includes(".tmp-"))).toBe(false);
+			expect(writes).toHaveLength(2);
+			expect(writes[0]).toContain(".tmp-");
+			expect(writes[1]).toBe(".obsidian/plugins/stonerelay/data.json");
+			expect(warn).not.toHaveBeenCalled();
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("plugin data write still warns on unexpected rename failures", async () => {
+		const files = new Map<string, string>();
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+		try {
+			await writePluginDataAtomic(
+				{
+					write: async (path, data) => {
+						files.set(path, data);
+					},
+					read: async (path) => {
+						const value = files.get(path);
+						if (value === undefined) throw new Error(`missing ${path}`);
+						return value;
+					},
+					rename: async () => {
+						throw new Error("disk unavailable");
+					},
+					remove: async (path) => {
+						files.delete(path);
+					},
+				},
+				".obsidian/plugins/stonerelay/data.json",
+				"{\"schemaVersion\":4}\n",
+				async () => {
+					throw new Error("fallback should not be used");
+				}
+			);
+
+			expect(warn).toHaveBeenCalledWith("Stonerelay: adapter rename failed (disk unavailable); using write-confirm-remove fallback for data.json.");
+		} finally {
+			warn.mockRestore();
+		}
 	});
 });
 

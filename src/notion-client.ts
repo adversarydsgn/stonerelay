@@ -1,9 +1,10 @@
-import { Client } from "@notionhq/client";
+import { Client, LogLevel } from "@notionhq/client";
 import { requestUrl } from "obsidian";
 
 export function createNotionClient(apiKey: string): Client {
 	return new Client({
 		auth: apiKey,
+		logLevel: LogLevel.ERROR,
 		fetch: async (url: RequestInfo | URL, init?: RequestInit) => {
 			const urlString = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
 			const response = await requestUrl({
@@ -114,4 +115,3 @@ export function normalizeNotionId(input: string): string {
 		hex.slice(20, 32),
 	].join("-");
 }
-
