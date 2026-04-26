@@ -580,8 +580,9 @@ export default class NotionFreezePlugin extends Plugin {
 			remove?: (path: string) => Promise<void>;
 		};
 		if (!adapter.write) {
-			console.warn("Stonerelay: Obsidian adapter does not expose write(); atomic data.json writes are unavailable.");
-			throw new Error("Atomic data.json writes are unavailable on this Obsidian adapter.");
+			console.warn("Stonerelay: Obsidian adapter does not expose write(); falling back to Plugin.saveData without atomic rename.");
+			await this.saveData(settings);
+			return;
 		}
 		const dataPath = `.obsidian/plugins/${this.manifest.id}/data.json`;
 		const tempPath = `${dataPath}.tmp-${Date.now()}`;

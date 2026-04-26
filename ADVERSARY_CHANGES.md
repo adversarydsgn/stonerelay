@@ -2,6 +2,15 @@
 
 Fork-side changes to `stonerelay` (vs. upstream `ran-codes/obsidian-notion-database-sync`).
 
+## v0.7.1 — 2026-04-25
+
+Fixes plugin load on Obsidian adapter surfaces that do not expose the direct temp-write API used by the v0.7.0 atomic settings path.
+
+**Behavior notes:**
+- Atomic `data.json` writes still use adapter temp write + rename when available.
+- Rename-less adapters use the v0.7.0 write-confirm-remove fallback.
+- If the adapter does not expose direct write, Stonerelay logs a warning and falls back to Obsidian's `Plugin.saveData()` instead of failing plugin load.
+
 ## v0.7.0 — 2026-04-25
 
 Adds two-phase configuration for safe source-of-truth bidirectional sync.
