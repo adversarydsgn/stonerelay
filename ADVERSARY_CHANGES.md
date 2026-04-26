@@ -2,6 +2,15 @@
 
 Fork-side changes to `stonerelay` (vs. upstream `ran-codes/obsidian-notion-database-sync`).
 
+## v0.7.4 — 2026-04-26
+
+Hardens startup recovery so interrupted-sync bookkeeping cannot abort plugin load if settings persistence fails.
+
+**Behavior notes:**
+- Startup still marks interrupted syncs in memory and attempts to persist that recovery state.
+- If persistence fails, Stonerelay logs the failure and continues loading commands, ribbon UI, and settings UI.
+- The user still receives the interrupted-sync notice so the recovery state remains visible.
+
 ## v0.7.3 — 2026-04-26
 
 Fixes the confirmed Obsidian reload failure where the adapter throws `Destination file already exists!` when replacing plugin `data.json`.

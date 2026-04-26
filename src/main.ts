@@ -568,7 +568,11 @@ export default class NotionFreezePlugin extends Plugin {
 			}),
 		};
 		if (changed) {
-			await this.saveSettings();
+			try {
+				await this.saveSettings();
+			} catch (err) {
+				console.warn(`Stonerelay: failed to persist interrupted sync recovery during startup (${errorMessage(err)}).`);
+			}
 			new Notice("A previous sync was interrupted. Resume from cursor or restart from beginning.");
 		}
 	}
@@ -651,4 +655,8 @@ function formatDatabaseResult(
 function folderName(path: string): string {
 	const idx = path.lastIndexOf("/");
 	return idx >= 0 ? path.slice(idx + 1) : path || "Untitled";
+}
+
+function errorMessage(err: unknown): string {
+	return err instanceof Error ? err.message : String(err);
 }
