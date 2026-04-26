@@ -7,6 +7,7 @@ import { freshDatabaseImport, refreshDatabase } from "./database-freezer";
 import { migrateData, resolveOutputFolder, syncAll, updateDatabase } from "./settings-data";
 import { pushDatabase } from "./push";
 import { applyPhaseTransition, syncErrorsFromMessages, SyncCancelled } from "./sync-state";
+import { PluginDataAdapter, writePluginDataAtomic } from "./plugin-data";
 
 export default class NotionFreezePlugin extends Plugin {
 	settings: NotionFreezeSettings = migrateData(null);
@@ -573,37 +574,12 @@ export default class NotionFreezePlugin extends Plugin {
 	}
 
 	private async saveSettingsAtomic(settings: NotionFreezeSettings): Promise<void> {
-		const adapter = this.app.vault.adapter as {
-			write?: (path: string, data: string) => Promise<void>;
-			read?: (path: string) => Promise<string>;
-			rename?: (from: string, to: string) => Promise<void>;
-			remove?: (path: string) => Promise<void>;
-		};
-		if (!adapter.write) {
-			console.warn("Stonerelay: Obsidian adapter does not expose write(); falling back to Plugin.saveData without atomic rename.");
-			await this.saveData(settings);
-			return;
-		}
+		const adapter = this.app.vault.adapter as PluginDataAdapter;
 		const dataPath = `.obsidian/plugins/${this.manifest.id}/data.json`;
-		const tempPath = `${dataPath}.tmp-${Date.now()}`;
 		const payload = `${JSON.stringify(settings, null, 2)}\n`;
-		await adapter.write(tempPath, payload);
-		if (!adapter.rename) {
-			console.warn("Stonerelay: Obsidian adapter lacks rename(); using write-confirm-remove fallback for data.json.");
-			if (adapter.read) {
-				const tempPayload = await adapter.read(tempPath);
-				if (tempPayload !== payload) throw new Error("Atomic settings write verification failed.");
-			}
-			await adapter.write(dataPath, payload);
-			await adapter.remove?.(tempPath).catch(() => undefined);
-			return;
-		}
-		try {
-			await adapter.rename(tempPath, dataPath);
-		} catch (err) {
-			await adapter.remove?.(tempPath).catch(() => undefined);
-			throw err;
-		}
+		await writePluginDataAtomic(adapter, dataPath, payload, async () => {
+			await this.saveData(settings);
+		});
 	}
 }
 

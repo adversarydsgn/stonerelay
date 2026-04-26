@@ -9,6 +9,7 @@ import {
 	syncErrorsFromMessages,
 	SyncCancelled,
 } from "../src/sync-state";
+import { writePluginDataAtomic } from "../src/plugin-data";
 import { writeJsonAtomic } from "../src/settings-data";
 
 describe("per-row failure (rsync pattern)", () => {
@@ -99,6 +100,73 @@ describe("atomic-rename data.json writes", () => {
 			await rm(dir, { recursive: true, force: true });
 		}
 	});
+
+	test("plugin data write renames temp payload into place on normal adapters", async () => {
+		const files = new Map<string, string>();
+
+		await writePluginDataAtomic(
+			{
+				write: async (path, data) => {
+					files.set(path, data);
+				},
+				rename: async (from, to) => {
+					const value = files.get(from);
+					if (value === undefined) throw new Error(`missing ${from}`);
+					files.delete(from);
+					files.set(to, value);
+				},
+			},
+			".obsidian/plugins/stonerelay/data.json",
+			"{\"schemaVersion\":4}\n",
+			async () => {
+				throw new Error("fallback should not be used");
+			}
+		);
+
+		expect(files.get(".obsidian/plugins/stonerelay/data.json")).toBe("{\"schemaVersion\":4}\n");
+		expect([...files.keys()].some((path) => path.includes(".tmp-"))).toBe(false);
+	});
+
+	test("plugin data write recovers when adapter rename cannot replace existing data.json", async () => {
+		const files = new Map<string, string>([
+			[".obsidian/plugins/stonerelay/data.json", "{\"schemaVersion\":3}\n"],
+		]);
+		const writes: string[] = [];
+
+		await writePluginDataAtomic(
+			{
+				write: async (path, data) => {
+					writes.push(path);
+					files.set(path, data);
+				},
+				read: async (path) => {
+					const value = files.get(path);
+					if (value === undefined) throw new Error(`missing ${path}`);
+					return value;
+				},
+				rename: async (from, to) => {
+					const value = files.get(from);
+					if (value === undefined) throw new Error(`missing ${from}`);
+					if (files.has(to)) throw new Error(`target exists ${to}`);
+					files.delete(from);
+					files.set(to, value);
+				},
+				remove: async (path) => {
+					files.delete(path);
+				},
+			},
+			".obsidian/plugins/stonerelay/data.json",
+			"{\"schemaVersion\":4}\n",
+			async () => {
+				throw new Error("fallback should not be used");
+			}
+		);
+
+		expect(files.get(".obsidian/plugins/stonerelay/data.json")).toBe("{\"schemaVersion\":4}\n");
+		expect([...files.keys()].some((path) => path.includes(".bak-"))).toBe(false);
+		expect(writes).toHaveLength(1);
+		expect(writes[0]).toContain(".tmp-");
+	});
 });
 
 describe("crash recovery", () => {
@@ -119,4 +187,3 @@ describe("crash recovery", () => {
 		});
 	});
 });
-

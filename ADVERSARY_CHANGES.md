@@ -2,6 +2,15 @@
 
 Fork-side changes to `stonerelay` (vs. upstream `ran-codes/obsidian-notion-database-sync`).
 
+## v0.7.2 — 2026-04-26
+
+Fixes plugin reload when Obsidian's adapter exposes temp writes and rename, but refuses to rename a temp `data.json` over the existing plugin data file.
+
+**Behavior notes:**
+- Startup recovery still writes the new settings payload to a temp file first.
+- If the adapter cannot replace the existing `data.json` directly, Stonerelay moves the old file to a temporary backup, renames the temp file into place, then removes the backup.
+- If replacement fails after backup, Stonerelay attempts to restore the prior `data.json` before surfacing the original load error.
+
 ## v0.7.1 — 2026-04-25
 
 Fixes plugin load on Obsidian adapter surfaces that do not expose the direct temp-write API used by the v0.7.0 atomic settings path.
