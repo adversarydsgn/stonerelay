@@ -17,34 +17,34 @@ export async function writePluginDataAtomic(
 		return;
 	}
 	const tempPath = `${dataPath}.tmp-${Date.now()}`;
-	const backupPath = `${dataPath}.bak-${Date.now()}`;
 	await adapter.write(tempPath, payload);
 	if (!adapter.rename) {
-		console.warn("Stonerelay: Obsidian adapter lacks rename(); using write-confirm-remove fallback for data.json.");
-		if (adapter.read) {
-			const tempPayload = await adapter.read(tempPath);
-			if (tempPayload !== payload) throw new Error("Atomic settings write verification failed.");
-		}
-		await adapter.write(dataPath, payload);
-		await adapter.remove?.(tempPath).catch(() => undefined);
+		await writeConfirmedFallback(adapter, tempPath, dataPath, payload, "Stonerelay: Obsidian adapter lacks rename(); using write-confirm-remove fallback for data.json.");
 		return;
 	}
 	try {
 		await adapter.rename(tempPath, dataPath);
 	} catch (err) {
-		let backedUp = false;
-		try {
-			await adapter.rename(dataPath, backupPath);
-			backedUp = true;
-			await adapter.rename(tempPath, dataPath);
-			await adapter.remove?.(backupPath).catch(() => undefined);
-		} catch (replaceErr) {
-			if (backedUp) {
-				await adapter.rename?.(backupPath, dataPath).catch(() => undefined);
-				await adapter.remove?.(backupPath).catch(() => undefined);
-			}
-			await adapter.remove?.(tempPath).catch(() => undefined);
-			throw backedUp ? replaceErr : err;
-		}
+		await writeConfirmedFallback(adapter, tempPath, dataPath, payload, `Stonerelay: adapter rename failed (${errorMessage(err)}); using write-confirm-remove fallback for data.json.`);
 	}
+}
+
+async function writeConfirmedFallback(
+	adapter: PluginDataAdapter,
+	tempPath: string,
+	dataPath: string,
+	payload: string,
+	message: string
+): Promise<void> {
+	console.warn(message);
+	if (adapter.read) {
+		const tempPayload = await adapter.read(tempPath);
+		if (tempPayload !== payload) throw new Error("Atomic settings write verification failed.");
+	}
+	await adapter.write?.(dataPath, payload);
+	await adapter.remove?.(tempPath).catch(() => undefined);
+}
+
+function errorMessage(err: unknown): string {
+	return err instanceof Error ? err.message : String(err);
 }

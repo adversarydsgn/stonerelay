@@ -127,7 +127,7 @@ describe("atomic-rename data.json writes", () => {
 		expect([...files.keys()].some((path) => path.includes(".tmp-"))).toBe(false);
 	});
 
-	test("plugin data write recovers when adapter rename cannot replace existing data.json", async () => {
+	test("plugin data write uses confirmed overwrite when adapter rename cannot replace existing data.json", async () => {
 		const files = new Map<string, string>([
 			[".obsidian/plugins/stonerelay/data.json", "{\"schemaVersion\":3}\n"],
 		]);
@@ -163,9 +163,10 @@ describe("atomic-rename data.json writes", () => {
 		);
 
 		expect(files.get(".obsidian/plugins/stonerelay/data.json")).toBe("{\"schemaVersion\":4}\n");
-		expect([...files.keys()].some((path) => path.includes(".bak-"))).toBe(false);
-		expect(writes).toHaveLength(1);
+		expect([...files.keys()].some((path) => path.includes(".tmp-"))).toBe(false);
+		expect(writes).toHaveLength(2);
 		expect(writes[0]).toContain(".tmp-");
+		expect(writes[1]).toBe(".obsidian/plugins/stonerelay/data.json");
 	});
 });
 

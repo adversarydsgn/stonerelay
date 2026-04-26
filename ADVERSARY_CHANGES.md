@@ -2,6 +2,15 @@
 
 Fork-side changes to `stonerelay` (vs. upstream `ran-codes/obsidian-notion-database-sync`).
 
+## v0.7.3 — 2026-04-26
+
+Fixes the confirmed Obsidian reload failure where the adapter throws `Destination file already exists!` when replacing plugin `data.json`.
+
+**Behavior notes:**
+- Keeps the temp-write-first path.
+- If `rename(temp, data.json)` fails, verifies the temp payload and overwrites `data.json` through the adapter write path.
+- Removes the temp file after the confirmed overwrite fallback.
+
 ## v0.7.2 — 2026-04-26
 
 Fixes plugin reload when Obsidian's adapter exposes temp writes and rename, but refuses to rename a temp `data.json` over the existing plugin data file.
