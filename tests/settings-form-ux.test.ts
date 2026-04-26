@@ -11,6 +11,7 @@ import {
 	buildConnectionPreview,
 	buildConnectionPreviewRows,
 	formWarnings,
+	shouldAutoFillDatabaseName,
 	shouldConfirmDirectionChange,
 	vaultFolderHelper,
 } from "../src/settings-ux";
@@ -143,5 +144,13 @@ describe("form UX polish v0.6.3/v0.6.4", () => {
 		expect(shouldConfirmDirectionChange("pull", "push", "2026-04-25T12:00:00.000Z")).toBe(true);
 		expect(shouldConfirmDirectionChange("pull", "pull", "2026-04-25T12:00:00.000Z")).toBe(false);
 		expect(shouldConfirmDirectionChange("pull", "push", null)).toBe(false);
+	});
+
+	test("new database default name auto-fills from fetched Notion title until user edits it", () => {
+		expect(shouldAutoFillDatabaseName("Untitled database", false, true)).toBe(true);
+		expect(shouldAutoFillDatabaseName("", false, true)).toBe(true);
+		expect(shouldAutoFillDatabaseName("Custom label", false, true)).toBe(false);
+		expect(shouldAutoFillDatabaseName("Untitled database", true, true)).toBe(false);
+		expect(shouldAutoFillDatabaseName("Untitled database", false, false)).toBe(false);
 	});
 });

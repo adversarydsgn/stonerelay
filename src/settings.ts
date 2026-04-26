@@ -20,6 +20,7 @@ import {
 	fetchDatabaseMetadata,
 	formWarnings,
 	parseNotionDbId,
+	shouldAutoFillDatabaseName,
 	shouldConfirmDirectionChange,
 	slugify,
 	trimApiKey,
@@ -650,7 +651,7 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 				state.metadata = result.metadata;
 				state.fetchedTitle = result.metadata.title;
 				state.message = metadataMessage(result.metadata, mode === "test");
-				if (!state.nameTouched && !draft.name.trim()) {
+				if (shouldAutoFillDatabaseName(draft.name, state.nameTouched, this.editingId === "__new__")) {
 					draft.name = result.metadata.title;
 					nameInput?.setValue(draft.name);
 				}

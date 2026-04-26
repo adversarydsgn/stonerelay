@@ -2,6 +2,15 @@
 
 Fork-side changes to `stonerelay` (vs. upstream `ran-codes/obsidian-notion-database-sync`).
 
+## v0.7.5 — 2026-04-26
+
+Restores Notion-title auto-fill for new database entries after pasting a Notion URL or ID.
+
+**Behavior notes:**
+- New entries still initialize safely as `Untitled database`.
+- If the Name field has not been edited, fetched Notion metadata replaces the default label with the database title.
+- User-entered custom names are preserved and are not overwritten by metadata refreshes.
+
 ## v0.7.4 — 2026-04-26
 
 Hardens startup recovery so interrupted-sync bookkeeping cannot abort plugin load if settings persistence fails.

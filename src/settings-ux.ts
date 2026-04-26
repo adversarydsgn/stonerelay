@@ -93,6 +93,16 @@ export function trimApiKey(value: string): string {
 	return value.trim();
 }
 
+export function shouldAutoFillDatabaseName(
+	currentName: string,
+	nameTouched: boolean,
+	isNewEntry: boolean
+): boolean {
+	if (nameTouched) return false;
+	const trimmed = currentName.trim();
+	return trimmed.length === 0 || (isNewEntry && trimmed === "Untitled database");
+}
+
 export function vaultFolderHelper(direction: SyncDirection): string {
 	if (direction === "push") {
 		return "Vault folder containing markdown files to push to Notion. Files in this folder will be uploaded as Notion rows.";
