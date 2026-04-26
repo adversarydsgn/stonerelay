@@ -18,7 +18,9 @@ obsidian-importer/
 data.json
 .DS_Store
 .agents/
+_artifacts/
 SPEC-*.md
 PROBE-*.md
 HANDOFF-*.md
+POSTMORTEM-*.md
 audit-report.md
