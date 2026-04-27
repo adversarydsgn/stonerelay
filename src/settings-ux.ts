@@ -70,9 +70,9 @@ export interface GroupedSyncEntries {
 }
 
 export const AUTO_SYNC_OVERRIDE_LABELS: Record<AutoSyncOverride, string> = {
-	inherit: "Inherit",
-	on: "On",
-	off: "Off",
+	inherit: "Auto-sync: Inherit",
+	on: "Auto-sync: On",
+	off: "Auto-sync: Off",
 };
 
 export type FetchDatabaseMetadataResult =

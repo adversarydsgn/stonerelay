@@ -2,6 +2,14 @@
 
 Fork-side changes to `stonerelay` (vs. upstream `ran-codes/obsidian-notion-database-sync`).
 
+## v0.9.1 — 2026-04-27
+
+Clarifies the v0.9.0 settings row controls.
+
+**Behavior notes:**
+- Per-entry auto-sync override dropdowns now label the setting directly as `Auto-sync: Inherit`, `Auto-sync: On`, and `Auto-sync: Off`.
+- Database row Pull and Push actions keep the arrow icons but restore visible `Pull` and `Push` text for context.
+
 ## v0.9.0 — 2026-04-27
 
 Adds organized active-work sync surfaces with groups, standalone page entries, and safe auto-sync queueing.

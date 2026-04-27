@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+	AUTO_SYNC_OVERRIDE_LABELS,
 	autoSyncReadiness,
 	databaseDirectionCounts,
 	fetchDatabaseMetadata,
@@ -90,6 +91,14 @@ describe("trimApiKey", () => {
 });
 
 describe("pegged row helpers", () => {
+	it("makes auto-sync override labels self-explanatory", () => {
+		expect(AUTO_SYNC_OVERRIDE_LABELS).toEqual({
+			inherit: "Auto-sync: Inherit",
+			on: "Auto-sync: On",
+			off: "Auto-sync: Off",
+		});
+	});
+
 	it("summarizes pegged, pull-only, and push-only counts", () => {
 		const rows = [{ direction: "bidirectional" }, { direction: "pull" }, { direction: "push" }, { direction: "bidirectional" }] as const;
 

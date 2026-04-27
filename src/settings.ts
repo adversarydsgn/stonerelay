@@ -447,6 +447,9 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 				btn
 					.setButtonText("Pull")
 					.setIcon("arrow-down")
+					.then((button) => {
+						button.buttonEl.addClass("stonerelay-action-button");
+					})
 					.onClick(() => {
 						void this.syncRow(entry);
 					})
@@ -456,6 +459,9 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 					btn
 						.setButtonText("Push")
 						.setIcon("arrow-up")
+						.then((button) => {
+							button.buttonEl.addClass("stonerelay-action-button");
+						})
 						.onClick(() => {
 							void this.pushRow(entry);
 						})
