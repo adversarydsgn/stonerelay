@@ -10,6 +10,7 @@ import {
 	VaultFolderStats,
 	buildConnectionPreview,
 	buildConnectionPreviewRows,
+	directionChangeWarning,
 	formWarnings,
 	shouldAutoFillDatabaseName,
 	shouldConfirmDirectionChange,
@@ -26,7 +27,7 @@ describe("form UX polish v0.6.3/v0.6.4", () => {
 	test('"Sync direction" section header renders', () => {
 		expect("Sync direction").toBe("Sync direction");
 		expect(DIRECTION_SECTION_HELPER).toBe(
-			"Pull seeds vault from Notion. Push seeds Notion from vault. Bidirectional uses last-writer-wins until v0.7 ships proper conflict resolution."
+			"Pull seeds vault from Notion. Push seeds Notion from vault. Bidirectional pegs both sides and surfaces conflicts for review."
 		);
 	});
 
@@ -35,14 +36,14 @@ describe("form UX polish v0.6.3/v0.6.4", () => {
 			[
 			  "Pull (Notion is source — vault gets seeded)",
 			  "Push (Vault is source — Notion gets seeded)",
-			  "Bidirectional (both authoritative — v0.7+ only)",
+			  "Bidirectional (pegged partnership)",
 			]
 		`);
 	});
 
-	test("helper text under radio renders Bidirectional v0.6 caveat", () => {
-		expect(DIRECTION_HELPER).toContain("last-writer-wins");
-		expect(DIRECTION_HELPER).toContain("Use only if you understand the risk.");
+	test("helper text under radio renders Bidirectional conflict caveat", () => {
+		expect(DIRECTION_HELPER).toContain("pegs both sides");
+		expect(DIRECTION_HELPER).toContain("Conflicts are surfaced for review");
 	});
 
 	test("test connection preview placeholder renders before first click", () => {
@@ -52,9 +53,9 @@ describe("form UX polish v0.6.3/v0.6.4", () => {
 	test("direction labels are verbose with consequence", () => {
 		expect(DIRECTION_LABELS.pull).toBe("Pull (Notion is source — vault gets seeded)");
 		expect(DIRECTION_LABELS.push).toBe("Push (Vault is source — Notion gets seeded)");
-		expect(DIRECTION_LABELS.bidirectional).toBe("Bidirectional (both authoritative — v0.7+ only)");
+		expect(DIRECTION_LABELS.bidirectional).toBe("Bidirectional (pegged partnership)");
 		expect(DIRECTION_HELPER).toBe(
-			"Bidirectional uses last-writer-wins until v0.7 ships proper conflict resolution. Use only if you understand the risk."
+			"Bidirectional pegs both sides. Conflicts are surfaced for review instead of silently overwritten."
 		);
 	});
 
@@ -144,6 +145,9 @@ describe("form UX polish v0.6.3/v0.6.4", () => {
 		expect(shouldConfirmDirectionChange("pull", "push", "2026-04-25T12:00:00.000Z")).toBe(true);
 		expect(shouldConfirmDirectionChange("pull", "pull", "2026-04-25T12:00:00.000Z")).toBe(false);
 		expect(shouldConfirmDirectionChange("pull", "push", null)).toBe(false);
+		expect(directionChangeWarning("pull", "push")).toContain("Obsidian becomes authoritative");
+		expect(directionChangeWarning("push", "bidirectional")).toContain("Conflicts may surface");
+		expect(directionChangeWarning("bidirectional", "pull")).toContain("will not propagate to Notion");
 	});
 
 	test("new database default name auto-fills from fetched Notion title until user edits it", () => {

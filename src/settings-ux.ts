@@ -1,5 +1,5 @@
 import { Client } from "@notionhq/client";
-import { SyncDirection } from "./types";
+import { Conflict, SyncDirection, SyncedDatabase } from "./types";
 
 export interface DatabaseMetadata {
 	title: string;
@@ -11,16 +11,16 @@ export interface DatabaseMetadata {
 export const DIRECTION_LABELS: Record<SyncDirection, string> = {
 	pull: "Pull (Notion is source — vault gets seeded)",
 	push: "Push (Vault is source — Notion gets seeded)",
-	bidirectional: "Bidirectional (both authoritative — v0.7+ only)",
+	bidirectional: "Bidirectional (pegged partnership)",
 };
 
 export const DIRECTION_OPTION_ORDER: SyncDirection[] = ["pull", "push", "bidirectional"];
 
 export const DIRECTION_SECTION_HELPER =
-	"Pull seeds vault from Notion. Push seeds Notion from vault. Bidirectional uses last-writer-wins until v0.7 ships proper conflict resolution.";
+	"Pull seeds vault from Notion. Push seeds Notion from vault. Bidirectional pegs both sides and surfaces conflicts for review.";
 
 export const DIRECTION_HELPER =
-	"Bidirectional uses last-writer-wins until v0.7 ships proper conflict resolution. Use only if you understand the risk.";
+	"Bidirectional pegs both sides. Conflicts are surfaced for review instead of silently overwritten.";
 
 export const PREVIEW_PLACEHOLDER =
 	"Click Test connection to preview row counts and next-sync action.";
@@ -46,6 +46,20 @@ export interface ConnectionPreviewInput {
 export interface PreviewRow {
 	icon: "✓" | "⚠" | "→";
 	text: string;
+}
+
+export interface DatabaseDirectionCounts {
+	pegged: number;
+	pullOnly: number;
+	pushOnly: number;
+}
+
+export interface SyncHistoryTooltip {
+	lastSyncedAt: string | null;
+	lastPulledAt: string | null;
+	lastPushedAt: string | null;
+	lastStatus: string;
+	lastError?: string;
 }
 
 export type FetchDatabaseMetadataResult =
@@ -160,6 +174,81 @@ export function shouldConfirmDirectionChange(
 	return Boolean(lastSyncedAt && previousDirection !== nextDirection);
 }
 
+export function directionChangeWarning(previousDirection: SyncDirection, nextDirection: SyncDirection): string {
+	if (previousDirection === "pull" && nextDirection === "push") {
+		return "Obsidian becomes authoritative. Notion-side changes may be overwritten on the next push.";
+	}
+	if (previousDirection === "push" && nextDirection === "bidirectional") {
+		return "Bidirectional partnership will be active. Conflicts may surface when both sides change.";
+	}
+	if (previousDirection === "bidirectional" && nextDirection === "pull") {
+		return "Obsidian-side changes since the last push will not propagate to Notion.";
+	}
+	return `Changing from ${directionName(previousDirection)} to ${directionName(nextDirection)} changes which side can write during the next sync.`;
+}
+
+export function databaseDirectionCounts(databases: Pick<SyncedDatabase, "direction">[]): DatabaseDirectionCounts {
+	return databases.reduce<DatabaseDirectionCounts>((counts, entry) => {
+		if (entry.direction === "bidirectional") counts.pegged++;
+		else if (entry.direction === "push") counts.pushOnly++;
+		else counts.pullOnly++;
+		return counts;
+	}, { pegged: 0, pullOnly: 0, pushOnly: 0 });
+}
+
+export function syncedDatabasesHeader(databases: Pick<SyncedDatabase, "direction">[]): string {
+	const counts = databaseDirectionCounts(databases);
+	return `Synced databases · ${counts.pegged} pegged · ${counts.pullOnly} pull-only · ${counts.pushOnly} push-only`;
+}
+
+export function pendingConflictCount(entry: Pick<SyncedDatabase, "direction">, conflicts: Conflict[]): number {
+	return entry.direction === "bidirectional" ? conflicts.length : 0;
+}
+
+export function syncHistoryTooltip(entry: Pick<SyncedDatabase, "lastSyncedAt" | "lastPulledAt" | "lastPushedAt" | "lastSyncStatus" | "lastSyncError">): SyncHistoryTooltip {
+	const tooltip: SyncHistoryTooltip = {
+		lastSyncedAt: entry.lastSyncedAt ?? null,
+		lastPulledAt: entry.lastPulledAt ?? null,
+		lastPushedAt: entry.lastPushedAt ?? null,
+		lastStatus: entry.lastSyncStatus ?? "never",
+	};
+	if (entry.lastSyncError) {
+		tooltip.lastError = entry.lastSyncError;
+	}
+	return tooltip;
+}
+
+export function syncHistoryTitle(entry: Pick<SyncedDatabase, "lastSyncedAt" | "lastPulledAt" | "lastPushedAt" | "lastSyncStatus" | "lastSyncError">): string {
+	const tooltip = syncHistoryTooltip(entry);
+	const lines = [
+		`Last full sync: ${tooltip.lastSyncedAt ?? "Never"}`,
+		`Last successful pull: ${tooltip.lastPulledAt ?? "Never"}`,
+		`Last successful push: ${tooltip.lastPushedAt ?? "Never"}`,
+		`Last status: ${tooltip.lastStatus}`,
+	];
+	if (tooltip.lastError) {
+		lines.push(`Last error: ${tooltip.lastError}`);
+	}
+	return lines.join("\n");
+}
+
+export function lastEditSideIndicator(entry: Pick<SyncedDatabase, "direction">, conflicts: Conflict[]): string {
+	if (pendingConflictCount(entry, conflicts) > 0) return "!";
+	return "=";
+}
+
+export function autoSyncReadiness(entry: Pick<SyncedDatabase, "direction" | "outputFolder" | "current_phase" | "lastSyncStatus" | "current_sync_id">, conflicts: Conflict[]): string {
+	if (entry.direction !== "bidirectional") return "Manual";
+	if (pendingConflictCount(entry, conflicts) > 0) return "Blocked: conflicts";
+	if (entry.current_sync_id) return "Paused: active sync";
+	if (entry.current_phase !== "phase_2") return "Paused: first sync incomplete";
+	if (!entry.outputFolder.trim()) return "Paused: missing folder";
+	if (entry.lastSyncStatus && ["partial", "error", "cancelled", "interrupted"].includes(entry.lastSyncStatus)) {
+		return `Blocked: ${entry.lastSyncStatus}`;
+	}
+	return "Ready for future auto-sync";
+}
+
 /**
  * Fetches display metadata for a Notion database without throwing UI-facing errors.
  */
@@ -208,6 +297,12 @@ function directionPreviewLine(direction: SyncDirection, rowCount: string | undef
 
 function displayFolderPath(path: string): string {
 	return path.endsWith("/") ? path : `${path}/`;
+}
+
+function directionName(direction: SyncDirection): string {
+	if (direction === "push") return "Push";
+	if (direction === "bidirectional") return "Bidirectional";
+	return "Pull";
 }
 
 function extractTitle(database: unknown): string {

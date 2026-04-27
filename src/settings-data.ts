@@ -27,6 +27,7 @@ export function migrateData(data: Partial<NotionFreezeSettings> | null): NotionF
 		DEFAULT_SETTINGS,
 		data ?? {}
 	);
+	migrated.defaultErrorLogFolder = migrated.defaultErrorLogFolder ?? "";
 
 	if (!migrated.schemaVersion || migrated.schemaVersion < 2) {
 		migrated.databases = migrated.databases ?? [];
@@ -50,6 +51,7 @@ export function migrateData(data: Partial<NotionFreezeSettings> | null): NotionF
 			current_sync_id: null,
 			lastCommittedRowId: entry.lastCommittedRowId ?? null,
 			lastSyncErrors: entry.lastSyncErrors ?? [],
+			errorLogFolder: entry.errorLogFolder ?? "",
 		});
 	});
 	if (migrated.schemaVersion < 3) {
@@ -105,6 +107,17 @@ export function resolveOutputFolder(
 		entry?.outputFolder?.trim() ||
 		settings.defaultOutputFolder?.trim() ||
 		"_relay"
+	);
+}
+
+export function resolveErrorLogFolder(
+	settings: Pick<NotionFreezeSettings, "defaultErrorLogFolder">,
+	entry?: Pick<SyncedDatabase, "errorLogFolder">
+): string | null {
+	return (
+		entry?.errorLogFolder?.trim() ||
+		settings.defaultErrorLogFolder?.trim() ||
+		null
 	);
 }
 
@@ -165,6 +178,7 @@ export function createDatabaseEntry(entry: Partial<SyncedDatabase>): SyncedDatab
 		name: entry.name?.trim() || "Untitled database",
 		databaseId: entry.databaseId ? normalizeDatabaseId(entry.databaseId) : "",
 		outputFolder: entry.outputFolder?.trim() || "",
+		errorLogFolder: entry.errorLogFolder?.trim() || "",
 		direction: normalizeDirection(entry.direction),
 		enabled: entry.enabled ?? true,
 		lastSyncedAt: entry.lastSyncedAt ?? null,

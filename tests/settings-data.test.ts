@@ -3,6 +3,7 @@ import {
 	addDatabase,
 	migrateData,
 	removeDatabase,
+	resolveErrorLogFolder,
 	resolveOutputFolder,
 	syncAll,
 } from "../src/settings-data";
@@ -15,6 +16,7 @@ function settings(databases: SyncedDatabase[] = []): NotionFreezeSettings {
 	return {
 		apiKey: "ntn_test",
 		defaultOutputFolder: "_relay",
+		defaultErrorLogFolder: "",
 		databases,
 		pendingConflicts: [],
 		schemaVersion: 4,
@@ -27,6 +29,7 @@ function database(overrides: Partial<SyncedDatabase> = {}): SyncedDatabase {
 		name: overrides.name ?? "Sessions Mirror",
 		databaseId: overrides.databaseId ?? dashedId,
 		outputFolder: overrides.outputFolder ?? "3. System/Sessions",
+		errorLogFolder: overrides.errorLogFolder ?? "",
 		direction: overrides.direction ?? "pull",
 		enabled: overrides.enabled ?? true,
 		lastSyncedAt: overrides.lastSyncedAt ?? null,
@@ -228,5 +231,19 @@ describe("output folder resolution", () => {
 		expect(resolveOutputFolder(settings(), database({ outputFolder: "" }))).toBe("_relay");
 		expect(resolveOutputFolder({ ...settings(), defaultOutputFolder: "" }, database({ outputFolder: "" }))).toBe("_relay");
 		expect(resolveOutputFolder(settings(), database({ outputFolder: "Custom" }))).toBe("Custom");
+	});
+});
+
+describe("error log folder resolution", () => {
+	it("prefers per-db override, then global default, then UI-only null", () => {
+		expect(resolveErrorLogFolder(
+			{ ...settings(), defaultErrorLogFolder: "_relay/errors" },
+			database({ errorLogFolder: "_relay/db-errors" })
+		)).toBe("_relay/db-errors");
+		expect(resolveErrorLogFolder(
+			{ ...settings(), defaultErrorLogFolder: "_relay/errors" },
+			database({ errorLogFolder: "" })
+		)).toBe("_relay/errors");
+		expect(resolveErrorLogFolder(settings(), database({ errorLogFolder: "" }))).toBeNull();
 	});
 });

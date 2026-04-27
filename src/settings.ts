@@ -16,12 +16,18 @@ import {
 	DIRECTION_SECTION_HELPER,
 	PREVIEW_PLACEHOLDER,
 	VaultFolderStats,
+	autoSyncReadiness,
 	buildConnectionPreviewRows,
+	directionChangeWarning,
 	fetchDatabaseMetadata,
 	formWarnings,
+	lastEditSideIndicator,
 	parseNotionDbId,
+	pendingConflictCount,
 	shouldAutoFillDatabaseName,
 	shouldConfirmDirectionChange,
+	syncHistoryTitle,
+	syncedDatabasesHeader,
 	slugify,
 	trimApiKey,
 	vaultFolderHelper,
@@ -109,7 +115,20 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 					})
 			);
 
-		containerEl.createEl("h3", { text: "Synced databases" });
+		new Setting(containerEl)
+			.setName("Default error log folder")
+			.setDesc("Optional vault folder for sync error logs. Per-database overrides take precedence.")
+			.addText((text) =>
+				text
+					.setPlaceholder("_relay/errors")
+					.setValue(this.plugin.settings.defaultErrorLogFolder)
+					.onChange(async (value) => {
+						this.plugin.settings.defaultErrorLogFolder = value.trim();
+						await this.plugin.saveSettings();
+					})
+			);
+
+		containerEl.createEl("h3", { text: syncedDatabasesHeader(this.plugin.settings.databases) });
 		if (!this.plugin.settings.apiKey) {
 			containerEl.createEl("div", {
 				cls: "stonerelay-api-key-notice",
@@ -206,21 +225,21 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 
 	private renderDatabaseRow(containerEl: HTMLElement, entry: SyncedDatabase): void {
 		const desc = document.createDocumentFragment();
-		desc.append(document.createTextNode(`${entry.databaseId}  ·  ${entry.outputFolder || "Default folder"}  ·  ${directionIcon(entry)}  ·  `));
+		const conflictCount = pendingConflictCount(entry, this.plugin.settings.pendingConflicts);
+		desc.append(document.createTextNode(`${entry.databaseId}  ·  ${entry.outputFolder || "Default folder"}  ·  ${directionIcon(entry)} ${directionLabelShort(entry)}  ·  ${lastEditSideIndicator(entry, this.plugin.settings.pendingConflicts)}  ·  `));
 		desc.appendChild(this.formatLastSync(entry));
+		desc.append(document.createTextNode(`  ·  ${autoSyncReadiness(entry, this.plugin.settings.pendingConflicts)}`));
 		if (entry.current_phase === "phase_2") {
 			desc.append(document.createTextNode("  ·  Phase 2"));
 		}
 		if (entry.lastSyncStatus === "partial" && entry.lastSyncErrors.length > 0) {
 			desc.append(document.createTextNode(`  ·  ${entry.lastSyncErrors.length} failed`));
 		}
-		const conflictCount = entry.direction === "bidirectional" ? this.plugin.settings.pendingConflicts.length : 0;
 		if (entry.direction === "bidirectional" && conflictCount > 0) {
 			desc.append(document.createTextNode(`  ·  ⚠ ${conflictCount} conflicts`));
 		}
 
 		const setting = new Setting(containerEl)
-			.setName(entry.name)
 			.setDesc(desc)
 			.addToggle((toggle) =>
 				toggle
@@ -234,6 +253,7 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 						this.display();
 					})
 			);
+		renderDatabaseName(setting.nameEl, entry);
 
 		if (this.syncingIds.has(entry.id) || this.plugin.isSyncActive(entry.id)) {
 			setting.controlEl.createSpan({
@@ -248,7 +268,8 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 		} else {
 			setting.addButton((btn) =>
 				btn
-					.setButtonText("Sync now")
+					.setButtonText("Pull")
+					.setIcon("arrow-down")
 					.onClick(() => {
 						void this.syncRow(entry);
 					})
@@ -256,7 +277,8 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 			if (canPush(entry)) {
 				setting.addButton((btn) =>
 					btn
-						.setButtonText("Push now")
+						.setButtonText("Push")
+						.setIcon("arrow-up")
 						.onClick(() => {
 							void this.pushRow(entry);
 						})
@@ -293,25 +315,18 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 
 		setting
 			.addButton((btn) => {
-				btn.setIcon("external-link").onClick(() => {
-					window.open(`https://www.notion.so/${entry.databaseId}`, "_blank");
-				});
-				btn.buttonEl.title = "Open in Notion";
-				btn.buttonEl.ariaLabel = "Open in Notion";
-			})
-			.addButton((btn) =>
-				btn
-					.setButtonText("Edit")
+				btn.setIcon("pencil")
 					.onClick(() => {
 						this.editingId = entry.id;
 						this.draft = { ...entry };
 						this.editState = this.createEditState(entry.databaseId, entry.name);
 						this.display();
-					})
-			)
-			.addButton((btn) =>
-				btn
-					.setButtonText("Delete")
+					});
+				btn.buttonEl.title = "Edit";
+				btn.buttonEl.ariaLabel = "Edit";
+			})
+			.addButton((btn) => {
+				btn.setIcon("trash")
 					.onClick(() => {
 						new ConfirmRemoveModal(this.app, entry.name, async () => {
 							this.plugin.settings = removeDatabase(this.plugin.settings, entry.id);
@@ -321,8 +336,11 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 							this.editState = null;
 							this.display();
 						}).open();
-					})
-			);
+					});
+				btn.buttonEl.title = "Delete";
+				btn.buttonEl.ariaLabel = "Delete";
+				btn.buttonEl.addClass("stonerelay-delete-button");
+			});
 
 		if (entry.lastSyncStatus === "error" && this.expandedErrorIds.has(entry.id)) {
 			containerEl.createEl("pre", {
@@ -370,6 +388,11 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 			}
 			if (!isValidRelativePath(finalOutput)) {
 				state.validationError = "Output folder must be a relative vault path without ../ traversal.";
+				this.display();
+				return;
+			}
+			if (draft.errorLogFolder.trim() && !isValidRelativePath(draft.errorLogFolder.trim())) {
+				state.validationError = "Error log folder must be a relative vault path without ../ traversal.";
 				this.display();
 				return;
 			}
@@ -506,6 +529,19 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 					updateFormUx();
 				})
 		);
+
+		new Setting(wrapper)
+			.setName("Error log folder override")
+			.setDesc("Optional vault folder for this database's sync error logs. Leave blank to use the global default.")
+			.addText((text) =>
+				text
+					.setPlaceholder(this.plugin.settings.defaultErrorLogFolder || "_relay/errors")
+					.setValue(draft.errorLogFolder)
+					.onChange((value) => {
+						draft.errorLogFolder = value.trim();
+						state.validationError = undefined;
+					})
+			);
 
 		const directionSection = wrapper.createDiv({ cls: "stonerelay-direction-section" });
 		directionSection.createEl("div", {
@@ -821,7 +857,7 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 		}
 
 		el.setText(relativeTime(entry.lastSyncedAt));
-		el.title = entry.lastSyncedAt;
+		el.title = syncHistoryTitle(entry);
 		return el;
 	}
 }
@@ -943,7 +979,7 @@ class ConfirmDirectionChangeModal extends Modal {
 			text: "Direction change detected",
 		});
 		this.contentEl.createEl("p", {
-			text: `This entry has been synced before with direction \`${directionName(this.previousDirection)}\`. Changing to \`${directionName(this.nextDirection)}\` may overwrite Notion rows with vault content on the next sync. Continue?`,
+			text: `This entry has been synced before with direction \`${directionName(this.previousDirection)}\`. ${directionChangeWarning(this.previousDirection, this.nextDirection)} Continue?`,
 		});
 
 		new Setting(this.contentEl)
@@ -1041,6 +1077,12 @@ function directionIcon(entry: SyncedDatabase): string {
 	return "←";
 }
 
+function directionLabelShort(entry: SyncedDatabase): string {
+	if (entry.direction === "bidirectional") return "Pegged";
+	if (entry.direction === "push") return "Push-only";
+	return "Pull-only";
+}
+
 function directionLabel(direction: SyncDirection, phaseOne: boolean): string {
 	if (!phaseOne) return DIRECTION_LABELS[direction];
 	if (direction === "pull") return "Pull (Notion is canonical for initial seed)";
@@ -1058,6 +1100,58 @@ function resolvedPathPreview(entry: SyncedDatabase): string {
 	return entry.nest_under_db_name
 		? `Files will land in: ${folder}/${name}/<file>.md`
 		: `Files will land in: ${folder}/<file>.md`;
+}
+
+function renderDatabaseName(nameEl: HTMLElement, entry: SyncedDatabase): void {
+	nameEl.empty();
+	const url = notionDatabaseUrl(entry.databaseId);
+	const target = url
+		? nameEl.createEl("a", {
+			cls: "stonerelay-db-name-link",
+			href: url,
+		})
+		: nameEl.createSpan({ cls: "stonerelay-db-name-plain" });
+	if (url) {
+		target.setAttribute("target", "_blank");
+		target.setAttribute("rel", "noopener");
+		target.setAttribute("aria-label", `Open ${entry.name} in Notion`);
+	}
+	appendNotionLogo(target);
+	target.createSpan({ text: entry.name });
+	if (url) {
+		target.createSpan({ cls: "stonerelay-external-link", text: "↗" });
+	}
+}
+
+function appendNotionLogo(parent: HTMLElement): void {
+	const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+	svg.setAttribute("viewBox", "0 0 16 16");
+	svg.setAttribute("aria-hidden", "true");
+	svg.classList.add("stonerelay-notion-logo");
+	const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+	rect.setAttribute("x", "2");
+	rect.setAttribute("y", "2");
+	rect.setAttribute("width", "12");
+	rect.setAttribute("height", "12");
+	rect.setAttribute("rx", "1.5");
+	rect.setAttribute("fill", "none");
+	rect.setAttribute("stroke", "currentColor");
+	rect.setAttribute("stroke-width", "1.5");
+	const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+	text.setAttribute("x", "8");
+	text.setAttribute("y", "11");
+	text.setAttribute("text-anchor", "middle");
+	text.setAttribute("font-size", "8");
+	text.setAttribute("font-weight", "700");
+	text.setAttribute("fill", "currentColor");
+	text.textContent = "N";
+	svg.append(rect, text);
+	parent.appendChild(svg);
+}
+
+function notionDatabaseUrl(databaseId: string): string | null {
+	const normalized = databaseId.replace(/-/g, "");
+	return /^[a-f0-9]{32}$/i.test(normalized) ? `https://www.notion.so/${normalized}` : null;
 }
 
 function conflictText(conflict: Conflict): string {

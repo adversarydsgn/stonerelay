@@ -1,10 +1,10 @@
-import { addIcon, App, Notice, Plugin, SuggestModal } from "obsidian";
+import { addIcon, App, Notice, Plugin, SuggestModal, normalizePath } from "obsidian";
 import { Conflict, NotionFreezeSettings, DatabaseSyncResult, SyncError, SyncRunOptions, SyncRunType, SyncedDatabase } from "./types";
 import { NotionFreezeSettingTab } from "./settings";
 import { FreezeModal, FrozenDatabase } from "./freeze-modal";
 import { createNotionClient, normalizeNotionId } from "./notion-client";
 import { freshDatabaseImport, refreshDatabase } from "./database-freezer";
-import { migrateData, resolveOutputFolder, syncAll, updateDatabase } from "./settings-data";
+import { migrateData, resolveErrorLogFolder, resolveOutputFolder, syncAll, updateDatabase } from "./settings-data";
 import { pushDatabase } from "./push";
 import { applyPhaseTransition, syncErrorsFromMessages, SyncCancelled } from "./sync-state";
 import { PluginDataAdapter, writePluginDataAtomic } from "./plugin-data";
@@ -193,6 +193,9 @@ export default class NotionFreezePlugin extends Plugin {
 				lastCommittedRowId: run.lastCommittedRowId,
 				current_sync_id: null,
 			}, status, errors, run.type, now));
+			if (status === "partial") {
+				await this.writeSyncErrorLog(entry, "pull", now, errors, run.lastCommittedRowId);
+			}
 			await this.saveSettings();
 			(this.app.workspace as any).trigger("stonerelay:settings-updated");
 			new Notice(`Sync complete: ${entry.name}`);
@@ -209,6 +212,14 @@ export default class NotionFreezePlugin extends Plugin {
 				lastCommittedRowId: run.lastCommittedRowId,
 				current_sync_id: null,
 			});
+			if (!cancelled) {
+				await this.writeSyncErrorLog(entry, "pull", now, [{
+					rowId: run.lastCommittedRowId ?? "unknown",
+					direction: "pull",
+					error: message,
+					timestamp: now,
+				}], run.lastCommittedRowId);
+			}
 			await this.saveSettings();
 			(this.app.workspace as any).trigger("stonerelay:settings-updated");
 			if (cancelled) {
@@ -246,6 +257,9 @@ export default class NotionFreezePlugin extends Plugin {
 				lastCommittedRowId: run.lastCommittedRowId,
 				current_sync_id: null,
 			}, status, errors, run.type, now));
+			if (status === "partial") {
+				await this.writeSyncErrorLog(entry, "push", now, errors, run.lastCommittedRowId);
+			}
 			await this.saveSettings();
 			(this.app.workspace as any).trigger("stonerelay:settings-updated");
 			new Notice(formatDatabaseResult(result.title, result, "pushed"));
@@ -262,6 +276,14 @@ export default class NotionFreezePlugin extends Plugin {
 				lastCommittedRowId: run.lastCommittedRowId,
 				current_sync_id: null,
 			});
+			if (!cancelled) {
+				await this.writeSyncErrorLog(entry, "push", now, [{
+					rowId: run.lastCommittedRowId ?? "unknown",
+					direction: "push",
+					error: message,
+					timestamp: now,
+				}], run.lastCommittedRowId);
+			}
 			await this.saveSettings();
 			(this.app.workspace as any).trigger("stonerelay:settings-updated");
 			if (cancelled) {
@@ -314,6 +336,7 @@ export default class NotionFreezePlugin extends Plugin {
 							...this.settings,
 							pendingConflicts: upsertConflict(this.settings.pendingConflicts, conflict),
 						};
+						void this.writeConflictLog(entry, conflict);
 					},
 				}
 				: options.bidirectional,
@@ -585,6 +608,79 @@ export default class NotionFreezePlugin extends Plugin {
 			await this.saveData(settings);
 		});
 	}
+
+	private async writeSyncErrorLog(
+		entry: SyncedDatabase,
+		direction: "pull" | "push",
+		timestamp: string,
+		errors: SyncError[],
+		lastCommittedRowId: string | null
+	): Promise<void> {
+		const folder = resolveErrorLogFolder(this.settings, entry);
+		if (!folder || !isSafeRelativePath(folder)) return;
+		const body = [
+			"# Stonerelay sync error",
+			"",
+			`timestamp: ${timestamp}`,
+			`database_name: ${entry.name}`,
+			`database_id: ${entry.databaseId}`,
+			`run_type: ${direction}`,
+			`last_committed_row_id: ${lastCommittedRowId ?? "none"}`,
+			"",
+			"## Errors",
+			...errors.map((error) => [
+				`- row_or_path: ${error.rowId}`,
+				`  code: ${error.errorCode ?? "unknown"}`,
+				`  message: ${error.error}`,
+			].join("\n")),
+			"",
+		].join("\n");
+		await this.writeVaultLog(folder, `${timestampedFilePrefix(timestamp)}-${entry.id}-${direction}.md`, body);
+	}
+
+	private async writeConflictLog(entry: SyncedDatabase, conflict: Conflict): Promise<void> {
+		const folder = resolveErrorLogFolder(this.settings, entry);
+		if (!folder || !isSafeRelativePath(folder)) return;
+		const body = [
+			"# Stonerelay conflict",
+			"",
+			`timestamp: ${conflict.detectedAt}`,
+			`database_name: ${entry.name}`,
+			`database_id: ${entry.databaseId}`,
+			`row_id: ${conflict.rowId}`,
+			`notion_edited_at: ${conflict.notionEditedAt}`,
+			`vault_edited_at: ${conflict.vaultEditedAt}`,
+			`source_of_truth: ${entry.source_of_truth ?? "unset"}`,
+			"write_back_blocked: true",
+			"",
+		].join("\n");
+		await this.writeVaultLog(folder, `${timestampedFilePrefix(conflict.detectedAt)}-${entry.id}-conflict-${safeFileToken(conflict.rowId)}.md`, body);
+	}
+
+	private async writeVaultLog(folder: string, filename: string, body: string): Promise<void> {
+		const adapter = this.app.vault.adapter as PluginDataAdapter & {
+			mkdir?: (path: string) => Promise<void>;
+		};
+		if (!adapter.write) return;
+		const safeFolder = normalizePath(folder);
+		await ensureVaultFolder(adapter, safeFolder);
+		const targetPath = normalizePath(`${safeFolder}/${filename}`);
+		const tempPath = `${targetPath}.tmp-${Date.now()}`;
+		const payload = sanitizeLogValue(body);
+		await adapter.write(tempPath, payload);
+		if (adapter.rename) {
+			try {
+				await adapter.rename(tempPath, targetPath);
+				return;
+			} catch {
+				await adapter.write(targetPath, payload);
+				await adapter.remove?.(tempPath).catch(() => undefined);
+				return;
+			}
+		}
+		await adapter.write(targetPath, payload);
+		await adapter.remove?.(tempPath).catch(() => undefined);
+	}
 }
 
 function upsertConflict(conflicts: Conflict[], conflict: Conflict): Conflict[] {
@@ -659,4 +755,39 @@ function folderName(path: string): string {
 
 function errorMessage(err: unknown): string {
 	return err instanceof Error ? err.message : String(err);
+}
+
+async function ensureVaultFolder(
+	adapter: PluginDataAdapter & { mkdir?: (path: string) => Promise<void> },
+	folder: string
+): Promise<void> {
+	if (!adapter.mkdir || folder === "/" || folder === ".") return;
+	const parts = folder.split("/").filter(Boolean);
+	let current = "";
+	for (const part of parts) {
+		current = current ? `${current}/${part}` : part;
+		await adapter.mkdir(current).catch(() => undefined);
+	}
+}
+
+function sanitizeLogValue(value: string): string {
+	return value
+		.replace(/(bearer\s+)[a-z0-9._-]+/gi, "$1[redacted]")
+		.replace(/(ntn_[a-z0-9_=-]+)/gi, "[redacted-notion-token]")
+		.replace(/([?&](?:api_key|token|access_token|auth)=)[^&\s]+/gi, "$1[redacted]");
+}
+
+function timestampedFilePrefix(iso: string): string {
+	const date = new Date(iso);
+	const source = Number.isNaN(date.getTime()) ? iso : date.toISOString();
+	return source.replace(/[:.]/g, "-");
+}
+
+function safeFileToken(value: string): string {
+	return value.replace(/[^a-z0-9_-]+/gi, "-").slice(0, 80) || "row";
+}
+
+function isSafeRelativePath(path: string): boolean {
+	if (!path || path.startsWith("/") || path.includes("\\")) return false;
+	return normalizePath(path).split("/").every((part) => part !== "..");
 }

@@ -209,6 +209,76 @@ describe("atomic-rename data.json writes", () => {
 			warn.mockRestore();
 		}
 	});
+
+	test("plugin data write uses confirmed overwrite when adapter has no rename", async () => {
+		const files = new Map<string, string>();
+
+		await writePluginDataAtomic(
+			{
+				write: async (path, data) => {
+					files.set(path, data);
+				},
+				read: async (path) => {
+					const value = files.get(path);
+					if (value === undefined) throw new Error(`missing ${path}`);
+					return value;
+				},
+				remove: async (path) => {
+					files.delete(path);
+				},
+			},
+			".obsidian/plugins/stonerelay/data.json",
+			"{\"schemaVersion\":4}\n",
+			async () => {
+				throw new Error("fallback should not be used");
+			}
+		);
+
+		expect(files.get(".obsidian/plugins/stonerelay/data.json")).toBe("{\"schemaVersion\":4}\n");
+		expect([...files.keys()].some((path) => path.includes(".tmp-"))).toBe(false);
+	});
+
+	test("plugin data write falls back to Plugin.saveData exactly once when adapter lacks write", async () => {
+		const fallback = vi.fn().mockResolvedValue(undefined);
+
+		await writePluginDataAtomic(
+			{
+				rename: async () => {
+					throw new Error("rename should not run");
+				},
+			},
+			".obsidian/plugins/stonerelay/data.json",
+			"{\"schemaVersion\":4}\n",
+			fallback
+		);
+
+		expect(fallback).toHaveBeenCalledTimes(1);
+	});
+
+	test("plugin data write rejects bad temp payloads without overwriting data.json", async () => {
+		const files = new Map<string, string>([
+			[".obsidian/plugins/stonerelay/data.json", "{\"schemaVersion\":3}\n"],
+		]);
+
+		await expect(writePluginDataAtomic(
+			{
+				write: async (path, data) => {
+					files.set(path, data);
+				},
+				read: async () => "{\"schemaVersion\":\"corrupt\"}\n",
+				rename: async () => {
+					throw new Error("target exists");
+				},
+			},
+			".obsidian/plugins/stonerelay/data.json",
+			"{\"schemaVersion\":4}\n",
+			async () => {
+				throw new Error("fallback should not be used");
+			}
+		)).rejects.toThrow("Atomic settings write verification failed.");
+
+		expect(files.get(".obsidian/plugins/stonerelay/data.json")).toBe("{\"schemaVersion\":3}\n");
+	});
 });
 
 describe("crash recovery", () => {

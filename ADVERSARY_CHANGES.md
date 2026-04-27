@@ -2,6 +2,18 @@
 
 Fork-side changes to `stonerelay` (vs. upstream `ran-codes/obsidian-notion-database-sync`).
 
+## v0.8.1 — 2026-04-27
+
+Polishes pegged-database settings UX and hardens plugin data persistence semantics.
+
+**Behavior notes:**
+- Bidirectional rows now present as `Pegged`, with header counts for pegged, pull-only, and push-only databases.
+- Row actions use clearer Pull/Push labels, icon-only Edit/Delete controls, and the database name carries the Notion-open affordance.
+- Sync history tooltips use persisted sync fields only; future auto-sync readiness is surfaced without enabling background writes.
+- Global and per-database error-log folders route partial, error, and conflict logs when configured.
+- `writePluginDataAtomic` documents its temp-first rename/fallback contract and keeps startup interrupted-sync persistence non-fatal.
+- Force resync and full file-watcher auto-sync remain deferred because the v0.8.1 base spec excludes a new sync algorithm and background polling.
+
 ## v0.7.7 — 2026-04-26
 
 Fixes noisy retry loops when Obsidian rejects plugin `data.json` rename-over-existing and a Notion row contains an inaccessible nested child block.

@@ -5,6 +5,13 @@ export interface PluginDataAdapter {
 	remove?: (path: string) => Promise<void>;
 }
 
+/**
+ * Writes plugin data with temp-first semantics.
+ *
+ * Uses adapter rename when available. Some Obsidian adapters cannot replace an
+ * existing data.json via rename, so the fallback verifies the temp payload and
+ * then overwrites data.json through adapter.write.
+ */
 export async function writePluginDataAtomic(
 	adapter: PluginDataAdapter,
 	dataPath: string,

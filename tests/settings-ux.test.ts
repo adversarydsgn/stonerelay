@@ -1,8 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+	autoSyncReadiness,
+	databaseDirectionCounts,
 	fetchDatabaseMetadata,
+	lastEditSideIndicator,
 	parseNotionDbId,
+	pendingConflictCount,
 	slugify,
+	syncHistoryTitle,
+	syncedDatabasesHeader,
 	trimApiKey,
 } from "../src/settings-ux";
 
@@ -46,6 +52,55 @@ describe("trimApiKey", () => {
 	it("preserves internal characters and handles empty strings", () => {
 		expect(trimApiKey("ntn_secret with space")).toBe("ntn_secret with space");
 		expect(trimApiKey("   ")).toBe("");
+	});
+});
+
+describe("pegged row helpers", () => {
+	it("summarizes pegged, pull-only, and push-only counts", () => {
+		const rows = [{ direction: "bidirectional" }, { direction: "pull" }, { direction: "push" }, { direction: "bidirectional" }] as const;
+
+		expect(databaseDirectionCounts(rows)).toEqual({ pegged: 2, pullOnly: 1, pushOnly: 1 });
+		expect(syncedDatabasesHeader(rows)).toBe("Synced databases · 2 pegged · 1 pull-only · 1 push-only");
+	});
+
+	it("shows conflict and auto-sync readiness state without inventing network-side edits", () => {
+		const entry = {
+			direction: "bidirectional",
+			outputFolder: "_relay/sessions",
+			current_phase: "phase_2",
+			lastSyncStatus: "ok",
+			current_sync_id: null,
+		} as const;
+		const conflicts = [{
+			rowId: "row-1",
+			notionEditedAt: "2026-04-27T01:00:00.000Z",
+			vaultEditedAt: "2026-04-27T01:01:00.000Z",
+			notionSnapshot: {},
+			vaultSnapshot: {},
+			detectedAt: "2026-04-27T01:02:00.000Z",
+		}];
+
+		expect(lastEditSideIndicator(entry, [])).toBe("=");
+		expect(lastEditSideIndicator(entry, conflicts)).toBe("!");
+		expect(pendingConflictCount(entry, conflicts)).toBe(1);
+		expect(autoSyncReadiness(entry, conflicts)).toBe("Blocked: conflicts");
+		expect(autoSyncReadiness({ ...entry, lastSyncStatus: "partial" }, [])).toBe("Blocked: partial");
+	});
+
+	it("uses persisted sync fields for history tooltip text", () => {
+		expect(syncHistoryTitle({
+			lastSyncedAt: "2026-04-27T01:00:00.000Z",
+			lastPulledAt: "2026-04-27T01:00:00.000Z",
+			lastPushedAt: null,
+			lastSyncStatus: "partial",
+			lastSyncError: "row-1 failed",
+		})).toBe([
+			"Last full sync: 2026-04-27T01:00:00.000Z",
+			"Last successful pull: 2026-04-27T01:00:00.000Z",
+			"Last successful push: Never",
+			"Last status: partial",
+			"Last error: row-1 failed",
+		].join("\n"));
 	});
 });
 

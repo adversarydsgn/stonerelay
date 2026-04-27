@@ -4,6 +4,7 @@ import { PageObjectResponse } from "@notionhq/client/build/src/api-endpoints";
 export interface NotionFreezeSettings {
 	apiKey: string;
 	defaultOutputFolder: string;
+	defaultErrorLogFolder: string;
 	databases: SyncedDatabase[];
 	pendingConflicts: Conflict[];
 	schemaVersion: number;
@@ -12,6 +13,7 @@ export interface NotionFreezeSettings {
 export const DEFAULT_SETTINGS: NotionFreezeSettings = {
 	apiKey: "",
 	defaultOutputFolder: "Notion",
+	defaultErrorLogFolder: "",
 	databases: [],
 	pendingConflicts: [],
 	schemaVersion: 4,
@@ -45,6 +47,7 @@ export interface SyncedDatabase {
 	name: string;
 	databaseId: string;
 	outputFolder: string;
+	errorLogFolder: string;
 	direction: SyncDirection;
 	enabled: boolean;
 	lastSyncedAt: string | null;
