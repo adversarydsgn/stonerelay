@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { safeFileNameForPage } from "../src/page-writer";
+import { buildFileContent, safeFileNameForPage } from "../src/page-writer";
 
 describe("page writer filenames", () => {
 	test("keeps normal sanitized page titles unchanged", () => {
@@ -14,5 +14,24 @@ describe("page writer filenames", () => {
 		expect(new TextEncoder().encode(`${fileName}.md`).length).toBeLessThan(255);
 		expect(fileName).not.toContain("/");
 		expect(fileName).not.toContain(":");
+	});
+});
+
+describe("standalone page content", () => {
+	test("writes standalone page frontmatter fields and converted body", () => {
+		const content = buildFileContent({
+			"notion-id": "page-1",
+			"notion-url": "https://www.notion.so/page-1",
+			"notion-frozen-at": "2026-04-27T10:00:00.000Z",
+			"notion-last-edited": "2026-04-27T09:00:00.000Z",
+			"notion-parent-type": "workspace",
+		}, "# Body\n");
+
+		expect(content).toContain("notion-id: page-1");
+		expect(content).toContain('notion-url: "https://www.notion.so/page-1"');
+		expect(content).toContain('notion-frozen-at: "2026-04-27T10:00:00.000Z"');
+		expect(content).toContain('notion-last-edited: "2026-04-27T09:00:00.000Z"');
+		expect(content).toContain("notion-parent-type: workspace");
+		expect(content).toContain("# Body");
 	});
 });

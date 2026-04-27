@@ -135,6 +135,37 @@
 	margin-top: 0;
 }
 
+.stonerelay-sync-group {
+	border-top: 1px solid var(--background-modifier-border);
+	padding: 8px 0 4px;
+}
+
+.stonerelay-sync-group-header {
+	align-items: center;
+	display: flex;
+	gap: 8px;
+	min-height: 32px;
+}
+
+.stonerelay-group-toggle {
+	background: transparent;
+	border: 0;
+	box-shadow: none;
+	color: var(--text-muted);
+	cursor: pointer;
+	flex: 0 0 28px;
+	height: 28px;
+	margin: 0;
+	padding: 0;
+	text-align: center;
+}
+
+.stonerelay-sync-group-title {
+	color: var(--text-normal);
+	font-weight: var(--font-semibold);
+	min-width: 0;
+}
+
 .stonerelay-db-name-link,
 .stonerelay-db-name-plain {
 	align-items: center;

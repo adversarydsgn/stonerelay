@@ -3,8 +3,10 @@ import {
 	autoSyncReadiness,
 	databaseDirectionCounts,
 	fetchDatabaseMetadata,
+	groupedSyncEntries,
 	lastEditSideIndicator,
 	parseNotionDbId,
+	parseNotionPageId,
 	pendingConflictCount,
 	slugify,
 	syncHistoryTitle,
@@ -28,6 +30,38 @@ describe("parseNotionDbId", () => {
 	it("rejects invalid inputs", () => {
 		expect(parseNotionDbId("not-a-url")).toBeNull();
 		expect(parseNotionDbId("https://example.com/foo")).toBeNull();
+	});
+});
+
+describe("parseNotionPageId", () => {
+	it("extracts page IDs from Notion URLs and UUID inputs", () => {
+		expect(parseNotionPageId(`https://www.notion.so/workspace/Page-Title-${rawId}?pvs=4`)).toBe(rawId);
+		expect(parseNotionPageId("01234567-89ab-cdef-0123-456789abcdef")).toBe(rawId);
+		expect(parseNotionPageId(rawId)).toBe(rawId);
+	});
+
+	it("rejects invalid page inputs", () => {
+		expect(parseNotionPageId("not-a-page")).toBeNull();
+		expect(parseNotionPageId("https://example.com/0123456789abcdef0123456789abcdef")).toBeNull();
+	});
+});
+
+describe("grouped sync entries", () => {
+	it("places missing or null group entries into Ungrouped and preserves group sections", () => {
+		const groups = [{ id: "group-1", name: "Active", collapsed: true }];
+		const databases = [
+			{ id: "db-1", groupId: "group-1" },
+			{ id: "db-2", groupId: null },
+		] as never;
+		const pages = [
+			{ id: "page-1", groupId: "missing" },
+			{ id: "page-2", groupId: "group-1" },
+		] as never;
+
+		expect(groupedSyncEntries(groups, databases, pages)).toMatchObject([
+			{ group: null, databases: [{ id: "db-2" }], pages: [{ id: "page-1" }] },
+			{ group: { id: "group-1", collapsed: true }, databases: [{ id: "db-1" }], pages: [{ id: "page-2" }] },
+		]);
 	});
 });
 

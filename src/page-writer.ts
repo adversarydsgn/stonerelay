@@ -2,7 +2,7 @@ import {
 	PageObjectResponse,
 } from "@notionhq/client/build/src/api-endpoints";
 import { App, normalizePath, TFile } from "obsidian";
-import { PageWriteOptions, PageWriteResult } from "./types";
+import { PageWriteOptions, PageWriteResult, StandalonePageWriteOptions } from "./types";
 import { convertBlocksToMarkdown, convertRichText, fetchAllChildren } from "./block-converter";
 
 const MAX_FILENAME_STEM_BYTES = 180;
@@ -50,10 +50,58 @@ export async function writeDatabaseEntry(
 	}
 }
 
+export async function writeStandalonePage(
+	app: App,
+	options: StandalonePageWriteOptions
+): Promise<PageWriteResult> {
+	const { client, page, outputFolder } = options;
+	const title = getStandalonePageTitle(page);
+	const safeName = safeFileNameForPage(title || "Untitled", page.id);
+	const filePath = normalizePath(`${outputFolder}/${safeName}.md`);
+	const blocks = await fetchAllChildren(client, page.id);
+	const markdown = await convertBlocksToMarkdown(blocks, {
+		client,
+		indentLevel: 0,
+	});
+	const parent = (page as { parent?: { type?: string } }).parent;
+	const frontmatter: Record<string, unknown> = {
+		"notion-id": page.id,
+		"notion-url": page.url,
+		"notion-frozen-at": new Date().toISOString(),
+		"notion-last-edited": page.last_edited_time,
+	};
+	if (parent?.type) {
+		frontmatter["notion-parent-type"] = parent.type;
+	}
+	const content = buildFileContent(frontmatter, markdown);
+	const existingFile = app.vault.getAbstractFileByPath(filePath);
+	if (existingFile instanceof TFile) {
+		await app.vault.modify(existingFile, content);
+		return { status: "updated", filePath, title: safeName };
+	}
+	await ensureFolder(app, outputFolder);
+	await app.vault.create(filePath, content);
+	return { status: "created", filePath, title: safeName };
+}
+
 function getPageTitle(page: PageObjectResponse): string {
 	for (const prop of Object.values(page.properties)) {
 		if (prop.type === "title") {
 			return convertRichText(prop.title);
+		}
+	}
+	return "Untitled";
+}
+
+function getStandalonePageTitle(page: PageObjectResponse): string {
+	const title = getPageTitle(page);
+	if (title !== "Untitled") return title;
+	const props = (page as { properties?: Record<string, unknown> }).properties ?? {};
+	for (const value of Object.values(props)) {
+		const prop = value as { type?: string; title?: Parameters<typeof convertRichText>[0] };
+		if (prop.type === "title" && prop.title) {
+			const text = convertRichText(prop.title);
+			if (text.trim()) return text;
 		}
 	}
 	return "Untitled";
@@ -274,7 +322,7 @@ function mapPropertiesToFrontmatter(
 	}
 }
 
-function buildFileContent(
+export function buildFileContent(
 	frontmatter: Record<string, unknown>,
 	body: string
 ): string {

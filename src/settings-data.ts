@@ -1,11 +1,16 @@
 import { promises as fs } from "fs";
 import { dirname } from "path";
-import { DEFAULT_SETTINGS, NotionFreezeSettings, SyncDirection, SyncError, SyncedDatabase } from "./types";
+import { DEFAULT_SETTINGS, NotionFreezeSettings, PageSyncEntry, SyncDirection, SyncError, SyncGroup, SyncedDatabase, AutoSyncOverride } from "./types";
 import { applyPhaseTransition } from "./sync-state";
 
 export type DatabaseInput = Partial<SyncedDatabase> & {
 	name?: string;
 	databaseId: string;
+};
+
+export type PageInput = Partial<PageSyncEntry> & {
+	name?: string;
+	pageId: string;
 };
 
 export interface SyncAllResult {
@@ -28,6 +33,11 @@ export function migrateData(data: Partial<NotionFreezeSettings> | null): NotionF
 		data ?? {}
 	);
 	migrated.defaultErrorLogFolder = migrated.defaultErrorLogFolder ?? "";
+	migrated.pages = migrated.pages ?? [];
+	migrated.groups = migrated.groups ?? [];
+	migrated.autoSyncEnabled = migrated.autoSyncEnabled ?? false;
+	migrated.autoSyncDatabasesByDefault = migrated.autoSyncDatabasesByDefault ?? false;
+	migrated.autoSyncPagesByDefault = migrated.autoSyncPagesByDefault ?? false;
 
 	if (!migrated.schemaVersion || migrated.schemaVersion < 2) {
 		migrated.databases = migrated.databases ?? [];
@@ -52,13 +62,20 @@ export function migrateData(data: Partial<NotionFreezeSettings> | null): NotionF
 			lastCommittedRowId: entry.lastCommittedRowId ?? null,
 			lastSyncErrors: entry.lastSyncErrors ?? [],
 			errorLogFolder: entry.errorLogFolder ?? "",
+			groupId: entry.groupId ?? null,
+			autoSync: normalizeAutoSyncOverride(entry.autoSync),
 		});
 	});
+	migrated.pages = (migrated.pages ?? []).map((entry) => createPageEntry(entry));
+	migrated.groups = (migrated.groups ?? []).map((group) => createGroup(group));
 	if (migrated.schemaVersion < 3) {
 		migrated.schemaVersion = 3;
 	}
 	if (migrated.schemaVersion < 4) {
 		migrated.schemaVersion = 4;
+	}
+	if (migrated.schemaVersion < 5) {
+		migrated.schemaVersion = 5;
 	}
 
 	return migrated;
@@ -99,9 +116,85 @@ export function removeDatabase(
 	};
 }
 
+export function addPage(
+	settings: NotionFreezeSettings,
+	entry: PageInput
+): NotionFreezeSettings {
+	return {
+		...settings,
+		pages: [
+			...settings.pages,
+			createPageEntry(entry),
+		],
+	};
+}
+
+export function updatePage(
+	settings: NotionFreezeSettings,
+	entry: PageSyncEntry
+): NotionFreezeSettings {
+	return {
+		...settings,
+		pages: settings.pages.map((page) =>
+			page.id === entry.id ? createPageEntry(entry) : page
+		),
+	};
+}
+
+export function removePage(
+	settings: NotionFreezeSettings,
+	id: string
+): NotionFreezeSettings {
+	return {
+		...settings,
+		pages: settings.pages.filter((page) => page.id !== id),
+	};
+}
+
+export function addGroup(
+	settings: NotionFreezeSettings,
+	name: string
+): NotionFreezeSettings {
+	return {
+		...settings,
+		groups: [
+			...settings.groups,
+			createGroup({ name }),
+		],
+	};
+}
+
+export function updateGroup(
+	settings: NotionFreezeSettings,
+	group: SyncGroup
+): NotionFreezeSettings {
+	return {
+		...settings,
+		groups: settings.groups.map((candidate) =>
+			candidate.id === group.id ? createGroup(group) : candidate
+		),
+	};
+}
+
+export function removeGroup(
+	settings: NotionFreezeSettings,
+	groupId: string
+): NotionFreezeSettings {
+	return {
+		...settings,
+		groups: settings.groups.filter((group) => group.id !== groupId),
+		databases: settings.databases.map((entry) =>
+			entry.groupId === groupId ? { ...entry, groupId: null } : entry
+		),
+		pages: settings.pages.map((entry) =>
+			entry.groupId === groupId ? { ...entry, groupId: null } : entry
+		),
+	};
+}
+
 export function resolveOutputFolder(
 	settings: NotionFreezeSettings,
-	entry?: Pick<SyncedDatabase, "outputFolder">
+	entry?: Pick<SyncedDatabase | PageSyncEntry, "outputFolder">
 ): string {
 	return (
 		entry?.outputFolder?.trim() ||
@@ -112,13 +205,26 @@ export function resolveOutputFolder(
 
 export function resolveErrorLogFolder(
 	settings: Pick<NotionFreezeSettings, "defaultErrorLogFolder">,
-	entry?: Pick<SyncedDatabase, "errorLogFolder">
+	entry?: Pick<SyncedDatabase | PageSyncEntry, "errorLogFolder">
 ): string | null {
 	return (
 		entry?.errorLogFolder?.trim() ||
 		settings.defaultErrorLogFolder?.trim() ||
 		null
 	);
+}
+
+export function effectiveAutoSyncEnabled(
+	settings: Pick<NotionFreezeSettings, "autoSyncEnabled" | "autoSyncDatabasesByDefault" | "autoSyncPagesByDefault">,
+	entry: Pick<SyncedDatabase, "autoSync"> | Pick<PageSyncEntry, "autoSync" | "type">,
+	entryType: "database" | "page" = "database"
+): boolean {
+	if (!settings.autoSyncEnabled) return false;
+	if (entry.autoSync === "off") return false;
+	if (entry.autoSync === "on") return true;
+	return entryType === "page"
+		? settings.autoSyncPagesByDefault
+		: settings.autoSyncDatabasesByDefault;
 }
 
 export async function syncAll(
@@ -179,6 +285,8 @@ export function createDatabaseEntry(entry: Partial<SyncedDatabase>): SyncedDatab
 		databaseId: entry.databaseId ? normalizeDatabaseId(entry.databaseId) : "",
 		outputFolder: entry.outputFolder?.trim() || "",
 		errorLogFolder: entry.errorLogFolder?.trim() || "",
+		groupId: entry.groupId ?? null,
+		autoSync: normalizeAutoSyncOverride(entry.autoSync),
 		direction: normalizeDirection(entry.direction),
 		enabled: entry.enabled ?? true,
 		lastSyncedAt: entry.lastSyncedAt ?? null,
@@ -197,6 +305,33 @@ export function createDatabaseEntry(entry: Partial<SyncedDatabase>): SyncedDatab
 	};
 }
 
+export function createPageEntry(entry: Partial<PageSyncEntry>): PageSyncEntry {
+	return {
+		id: entry.id || generateId(),
+		type: "page",
+		name: entry.name?.trim() || "Untitled page",
+		pageId: entry.pageId ? normalizeNotionPageId(entry.pageId) : "",
+		outputFolder: entry.outputFolder?.trim() || "",
+		errorLogFolder: entry.errorLogFolder?.trim() || "",
+		groupId: entry.groupId ?? null,
+		enabled: entry.enabled ?? true,
+		autoSync: normalizeAutoSyncOverride(entry.autoSync),
+		lastSyncedAt: entry.lastSyncedAt ?? null,
+		lastSyncStatus: entry.lastSyncStatus ?? "never",
+		lastSyncError: entry.lastSyncError,
+		current_sync_id: entry.current_sync_id ?? null,
+		lastFilePath: entry.lastFilePath ?? null,
+	};
+}
+
+export function createGroup(group: Partial<SyncGroup>): SyncGroup {
+	return {
+		id: group.id || generateId(),
+		name: group.name?.trim() || "Untitled group",
+		collapsed: group.collapsed ?? false,
+	};
+}
+
 export async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
 	await fs.mkdir(dirname(path), { recursive: true });
 	const tempPath = `${path}.tmp-${process.pid}-${Date.now()}`;
@@ -211,6 +346,10 @@ function shouldRunForMode(direction: SyncDirection, mode: SyncMode): boolean {
 
 function normalizeDirection(direction: unknown): SyncDirection {
 	return direction === "push" || direction === "bidirectional" ? direction : "pull";
+}
+
+function normalizeAutoSyncOverride(value: unknown): AutoSyncOverride {
+	return value === "on" || value === "off" ? value : "inherit";
 }
 
 function initialSeedDirection(direction: SyncDirection): "pull" | "push" {
@@ -249,6 +388,14 @@ function normalizeDatabaseId(input: string): string {
 	const hex = input.trim().replace(/-/g, "");
 	if (!/^[a-f0-9]{32}$/i.test(hex)) {
 		throw new Error(`Invalid Notion ID: ${input}`);
+	}
+	return hex.toLowerCase();
+}
+
+function normalizeNotionPageId(input: string): string {
+	const hex = input.trim().replace(/-/g, "");
+	if (!/^[a-f0-9]{32}$/i.test(hex)) {
+		throw new Error(`Invalid Notion page ID: ${input}`);
 	}
 	return hex.toLowerCase();
 }

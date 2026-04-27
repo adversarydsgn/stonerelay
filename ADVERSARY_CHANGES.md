@@ -2,6 +2,18 @@
 
 Fork-side changes to `stonerelay` (vs. upstream `ran-codes/obsidian-notion-database-sync`).
 
+## v0.9.0 — 2026-04-27
+
+Adds organized active-work sync surfaces with groups, standalone page entries, and safe auto-sync queueing.
+
+**Behavior notes:**
+- Settings data migrates to schema 5 with collapsible groups, standalone page entries, and global database/page auto-sync defaults.
+- Database and page rows can be assigned to groups, carry per-entry `Inherit / On / Off` auto-sync overrides, and keep manual Pull, Push, Refresh, Retry, Cancel, and conflict actions available.
+- Standalone page import accepts Notion page URLs or IDs, writes Markdown through the existing block conversion path, and refreshes only the configured page file.
+- Background vault events are watched only through the plugin runtime, debounced into a queue, collapsed by entry/path, and blocked by active syncs, pending conflicts, or partial/error/cancelled/interrupted statuses.
+- Background both-side-changed detection halts and persists pending conflict snapshots before any write-back; conflict resolution still requires explicit user action.
+- Error-log routing now covers page entries and auto-sync runs, with token redaction preserved.
+
 ## v0.8.1 — 2026-04-27
 
 Polishes pegged-database settings UX and hardens plugin data persistence semantics.

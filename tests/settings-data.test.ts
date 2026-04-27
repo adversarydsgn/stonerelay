@@ -1,13 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
 	addDatabase,
+	addGroup,
+	addPage,
+	effectiveAutoSyncEnabled,
 	migrateData,
 	removeDatabase,
+	removeGroup,
 	resolveErrorLogFolder,
 	resolveOutputFolder,
 	syncAll,
 } from "../src/settings-data";
-import { NotionFreezeSettings, SyncedDatabase } from "../src/types";
+import { NotionFreezeSettings, PageSyncEntry, SyncedDatabase } from "../src/types";
 
 const rawId = "5123456789ab4def8123456789abcdef";
 const dashedId = "51234567-89ab-4def-8123-456789abcdef";
@@ -18,7 +22,12 @@ function settings(databases: SyncedDatabase[] = []): NotionFreezeSettings {
 		defaultOutputFolder: "_relay",
 		defaultErrorLogFolder: "",
 		databases,
+		pages: [],
+		groups: [],
 		pendingConflicts: [],
+		autoSyncEnabled: false,
+		autoSyncDatabasesByDefault: false,
+		autoSyncPagesByDefault: false,
 		schemaVersion: 4,
 	};
 }
@@ -45,6 +54,27 @@ function database(overrides: Partial<SyncedDatabase> = {}): SyncedDatabase {
 		current_sync_id: overrides.current_sync_id ?? null,
 		lastCommittedRowId: overrides.lastCommittedRowId ?? null,
 		lastSyncErrors: overrides.lastSyncErrors ?? [],
+		groupId: overrides.groupId ?? null,
+		autoSync: overrides.autoSync ?? "inherit",
+	};
+}
+
+function page(overrides: Partial<PageSyncEntry> = {}): PageSyncEntry {
+	return {
+		id: overrides.id ?? crypto.randomUUID(),
+		type: "page",
+		name: overrides.name ?? "Standalone Page",
+		pageId: overrides.pageId ?? rawId,
+		outputFolder: overrides.outputFolder ?? "_relay/pages",
+		errorLogFolder: overrides.errorLogFolder ?? "",
+		groupId: overrides.groupId ?? null,
+		enabled: overrides.enabled ?? true,
+		autoSync: overrides.autoSync ?? "inherit",
+		lastSyncedAt: overrides.lastSyncedAt ?? null,
+		lastSyncStatus: overrides.lastSyncStatus ?? "never",
+		lastSyncError: overrides.lastSyncError,
+		current_sync_id: overrides.current_sync_id ?? null,
+		lastFilePath: overrides.lastFilePath ?? null,
 	};
 }
 
@@ -58,8 +88,11 @@ describe("settings data migration", () => {
 		expect(migrated.apiKey).toBe("ntn_existing");
 		expect(migrated.defaultOutputFolder).toBe("Notion");
 		expect(migrated.databases).toEqual([]);
-		expect(migrated.schemaVersion).toBe(4);
+		expect(migrated.schemaVersion).toBe(5);
 		expect(migrated.pendingConflicts).toEqual([]);
+		expect(migrated.groups).toEqual([]);
+		expect(migrated.pages).toEqual([]);
+		expect(migrated.autoSyncEnabled).toBe(false);
 	});
 
 	it("is idempotent on already migrated data", () => {
@@ -73,8 +106,10 @@ describe("settings data migration", () => {
 			direction: "pull",
 			lastPulledAt: null,
 			lastPushedAt: null,
+			groupId: null,
+			autoSync: "inherit",
 		});
-		expect(migrated.schemaVersion).toBe(4);
+		expect(migrated.schemaVersion).toBe(5);
 	});
 
 	it("migrates v0.5 entries to schema 3 without data loss", () => {
@@ -93,7 +128,7 @@ describe("settings data migration", () => {
 			} as SyncedDatabase],
 		});
 
-		expect(migrated.schemaVersion).toBe(4);
+		expect(migrated.schemaVersion).toBe(5);
 		expect(migrated.databases[0]).toMatchObject({
 			id: "db-1",
 			name: "Bugs",
@@ -111,6 +146,8 @@ describe("settings data migration", () => {
 			current_sync_id: null,
 			lastCommittedRowId: null,
 			lastSyncErrors: [],
+			groupId: null,
+			autoSync: "inherit",
 		});
 	});
 
@@ -132,6 +169,51 @@ describe("settings data migration", () => {
 			lastCommittedRowId: null,
 			lastSyncErrors: [],
 		});
+	});
+});
+
+describe("schema 5 groups, pages, and auto-sync settings", () => {
+	it("migrates v0.8.1 database entries without losing fields", () => {
+		const migrated = migrateData(settings([database({ id: "db-1", autoSync: undefined, groupId: undefined })]));
+
+		expect(migrated.schemaVersion).toBe(5);
+		expect(migrated.databases[0]).toMatchObject({
+			id: "db-1",
+			groupId: null,
+			autoSync: "inherit",
+		});
+		expect(migrated.pages).toEqual([]);
+		expect(migrated.groups).toEqual([]);
+	});
+
+	it("adds pages and groups, and deleting a group moves entries to Ungrouped", () => {
+		let current = addGroup(settings(), "Active");
+		const groupId = current.groups[0].id;
+		current = addDatabase(current, {
+			...database({ id: "db-1", groupId }),
+			databaseId: rawId,
+		});
+		current = addPage(current, page({ id: "page-1", groupId }));
+
+		const removed = removeGroup(current, groupId);
+		expect(removed.groups).toHaveLength(0);
+		expect(removed.databases[0].groupId).toBeNull();
+		expect(removed.pages[0].groupId).toBeNull();
+	});
+
+	it("resolves global/default/per-entry auto-sync state", () => {
+		const base = {
+			...settings(),
+			autoSyncEnabled: true,
+			autoSyncDatabasesByDefault: false,
+			autoSyncPagesByDefault: true,
+		};
+
+		expect(effectiveAutoSyncEnabled({ ...base, autoSyncEnabled: false }, database({ autoSync: "on" }), "database")).toBe(false);
+		expect(effectiveAutoSyncEnabled(base, database({ autoSync: "off" }), "database")).toBe(false);
+		expect(effectiveAutoSyncEnabled(base, database({ autoSync: "on" }), "database")).toBe(true);
+		expect(effectiveAutoSyncEnabled(base, database({ autoSync: "inherit" }), "database")).toBe(false);
+		expect(effectiveAutoSyncEnabled(base, page({ autoSync: "inherit" }), "page")).toBe(true);
 	});
 });
 

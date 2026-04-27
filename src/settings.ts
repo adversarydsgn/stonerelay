@@ -1,12 +1,16 @@
 import { App, ButtonComponent, Modal, Notice, PluginSettingTab, Setting, TFile, TFolder, normalizePath } from "obsidian";
 import NotionFreezePlugin from "./main";
-import { Conflict, SyncDirection, SyncedDatabase } from "./types";
+import { AutoSyncOverride, Conflict, PageSyncEntry, SyncDirection, SyncedDatabase } from "./types";
 import { createNotionClient } from "./notion-client";
 import {
 	addDatabase,
+	addGroup,
 	createDatabaseEntry,
 	removeDatabase,
+	removeGroup,
+	updateGroup,
 	updateDatabase,
+	updatePage,
 } from "./settings-data";
 import {
 	DatabaseMetadata,
@@ -16,11 +20,14 @@ import {
 	DIRECTION_SECTION_HELPER,
 	PREVIEW_PLACEHOLDER,
 	VaultFolderStats,
+	AUTO_SYNC_OVERRIDE_LABELS,
+	autoSyncEffectiveLabel,
 	autoSyncReadiness,
 	buildConnectionPreviewRows,
 	directionChangeWarning,
 	fetchDatabaseMetadata,
 	formWarnings,
+	groupedSyncEntries,
 	lastEditSideIndicator,
 	parseNotionDbId,
 	pendingConflictCount,
@@ -128,6 +135,45 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 					})
 			);
 
+		containerEl.createEl("h3", { text: "Auto-sync" });
+		new Setting(containerEl)
+			.setName("Auto-sync enabled")
+			.setDesc("Background queueing is disabled when this is off. Manual Pull, Push, and Page Refresh stay available.")
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.autoSyncEnabled)
+					.onChange(async (value) => {
+						this.plugin.settings.autoSyncEnabled = value;
+						await this.plugin.saveSettings();
+						this.display();
+					})
+			);
+		new Setting(containerEl)
+			.setName("Auto-sync databases by default")
+			.setDesc("Database entries set to Inherit follow this default.")
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.autoSyncDatabasesByDefault)
+					.onChange(async (value) => {
+						this.plugin.settings.autoSyncDatabasesByDefault = value;
+						await this.plugin.saveSettings();
+					})
+			);
+		new Setting(containerEl)
+			.setName("Auto-sync pages by default")
+			.setDesc("Page entries set to Inherit follow this default. Page auto-sync is refresh-only in 0.9.0.")
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.autoSyncPagesByDefault)
+					.onChange(async (value) => {
+						this.plugin.settings.autoSyncPagesByDefault = value;
+						await this.plugin.saveSettings();
+					})
+			);
+
+		containerEl.createEl("h3", { text: "Groups" });
+		this.renderGroupControls(containerEl);
+
 		containerEl.createEl("h3", { text: syncedDatabasesHeader(this.plugin.settings.databases) });
 		if (!this.plugin.settings.apiKey) {
 			containerEl.createEl("div", {
@@ -147,16 +193,61 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 			});
 		}
 
-		for (const entry of this.plugin.settings.databases) {
-			if (this.editingId === entry.id && this.draft) {
-				this.renderEditRow(containerEl, this.draft);
-			} else {
-				this.renderDatabaseRow(containerEl, entry);
+		for (const section of groupedSyncEntries(this.plugin.settings.groups, this.plugin.settings.databases, this.plugin.settings.pages)) {
+			const groupId = section.group?.id ?? null;
+			const title = section.group?.name ?? "Ungrouped";
+			const sectionEl = containerEl.createDiv({ cls: "stonerelay-sync-group" });
+			const header = sectionEl.createDiv({ cls: "stonerelay-sync-group-header" });
+			const toggle = header.createEl("button", {
+				cls: "stonerelay-group-toggle",
+				text: section.group?.collapsed ? "▸" : "▾",
+			});
+			toggle.type = "button";
+			toggle.onClickEvent(async () => {
+				if (!section.group) return;
+				this.plugin.settings = updateGroup(this.plugin.settings, {
+					...section.group,
+					collapsed: !section.group.collapsed,
+				});
+				await this.plugin.saveSettings();
+				this.display();
+			});
+			header.createSpan({
+				cls: "stonerelay-sync-group-title",
+				text: `${title} · ${section.databases.length} databases · ${section.pages.length} pages`,
+			});
+			if (section.group && section.databases.length + section.pages.length === 0) {
+				const deleteButton = header.createEl("button", {
+					cls: "clickable-icon stonerelay-delete-button",
+					text: "Delete",
+				});
+				deleteButton.type = "button";
+				deleteButton.onClickEvent(async () => {
+					this.plugin.settings = removeGroup(this.plugin.settings, section.group!.id);
+					await this.plugin.saveSettings();
+					this.display();
+				});
 			}
-		}
-
-		if (this.editingId === "__new__" && this.draft) {
-			this.renderEditRow(containerEl, this.draft);
+			if (section.group?.collapsed) continue;
+			for (const entry of section.databases) {
+				if (this.editingId === entry.id && this.draft) {
+					this.renderEditRow(sectionEl, this.draft);
+				} else {
+					this.renderDatabaseRow(sectionEl, entry);
+				}
+			}
+			for (const page of section.pages) {
+				this.renderPageRow(sectionEl, page);
+			}
+			if (!section.group && this.editingId === "__new__" && this.draft) {
+				this.renderEditRow(sectionEl, this.draft);
+			}
+			if (section.databases.length === 0 && section.pages.length === 0 && !this.draft) {
+				sectionEl.createEl("p", {
+					cls: "setting-item-description",
+					text: groupId ? "No entries in this group." : "No ungrouped entries.",
+				});
+			}
 		}
 
 		if (this.draft) {
@@ -182,6 +273,16 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 						});
 						this.editState = this.createEditState("");
 						this.display();
+					})
+			)
+			.addButton((btn) =>
+				btn
+					.setButtonText("Import page")
+					.onClick(() => {
+						new PageImportPromptModal(this.app, async (input, folder) => {
+							await this.plugin.importStandalonePageInput(input, folder);
+							this.display();
+						}, this.plugin.settings.defaultOutputFolder).open();
 					})
 			)
 			.addButton((btn) => {
@@ -223,12 +324,57 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 		await this.plugin.saveSettings();
 	}
 
+	private renderGroupControls(containerEl: HTMLElement): void {
+		let newGroupName = "";
+		new Setting(containerEl)
+			.setName("Create group")
+			.setDesc("Groups organize databases and standalone pages in collapsible sections.")
+			.addText((text) => text
+				.setPlaceholder("Group name")
+				.onChange((value) => {
+					newGroupName = value.trim();
+				}))
+			.addButton((button) => button
+				.setButtonText("Add group")
+				.onClick(async () => {
+					if (!newGroupName) return;
+					this.plugin.settings = addGroup(this.plugin.settings, newGroupName);
+					await this.plugin.saveSettings();
+					this.display();
+				}));
+		for (const group of this.plugin.settings.groups) {
+			new Setting(containerEl)
+				.setName(group.name)
+				.setDesc(group.collapsed ? "Collapsed" : "Expanded")
+				.addText((text) => text
+					.setPlaceholder("Group name")
+					.setValue(group.name)
+					.onChange(async (value) => {
+						this.plugin.settings = updateGroup(this.plugin.settings, {
+							...group,
+							name: value.trim() || group.name,
+						});
+						await this.plugin.saveSettings();
+					}))
+				.addButton((button) => button
+					.setButtonText(group.collapsed ? "Expand" : "Collapse")
+					.onClick(async () => {
+						this.plugin.settings = updateGroup(this.plugin.settings, {
+							...group,
+							collapsed: !group.collapsed,
+						});
+						await this.plugin.saveSettings();
+						this.display();
+					}));
+		}
+	}
+
 	private renderDatabaseRow(containerEl: HTMLElement, entry: SyncedDatabase): void {
 		const desc = document.createDocumentFragment();
 		const conflictCount = pendingConflictCount(entry, this.plugin.settings.pendingConflicts);
 		desc.append(document.createTextNode(`${entry.databaseId}  ·  ${entry.outputFolder || "Default folder"}  ·  ${directionIcon(entry)} ${directionLabelShort(entry)}  ·  ${lastEditSideIndicator(entry, this.plugin.settings.pendingConflicts)}  ·  `));
 		desc.appendChild(this.formatLastSync(entry));
-		desc.append(document.createTextNode(`  ·  ${autoSyncReadiness(entry, this.plugin.settings.pendingConflicts)}`));
+		desc.append(document.createTextNode(`  ·  ${autoSyncReadiness(entry, this.plugin.settings.pendingConflicts)}  ·  ${autoSyncEffectiveLabel(this.plugin.settings, entry, "database")}`));
 		if (entry.current_phase === "phase_2") {
 			desc.append(document.createTextNode("  ·  Phase 2"));
 		}
@@ -254,6 +400,37 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 					})
 			);
 		renderDatabaseName(setting.nameEl, entry);
+		setting.addDropdown((dropdown) => {
+			dropdown.addOption("", "Ungrouped");
+			for (const group of this.plugin.settings.groups) {
+				dropdown.addOption(group.id, group.name);
+			}
+			dropdown
+				.setValue(entry.groupId ?? "")
+				.onChange(async (value) => {
+					this.plugin.settings = updateDatabase(this.plugin.settings, {
+						...entry,
+						groupId: value || null,
+					});
+					await this.plugin.saveSettings();
+					this.display();
+				});
+		});
+		setting.addDropdown((dropdown) => {
+			for (const [value, label] of Object.entries(AUTO_SYNC_OVERRIDE_LABELS)) {
+				dropdown.addOption(value, label);
+			}
+			dropdown
+				.setValue(entry.autoSync)
+				.onChange(async (value) => {
+					this.plugin.settings = updateDatabase(this.plugin.settings, {
+						...entry,
+						autoSync: value as AutoSyncOverride,
+					});
+					await this.plugin.saveSettings();
+					this.display();
+				});
+		});
 
 		if (this.syncingIds.has(entry.id) || this.plugin.isSyncActive(entry.id)) {
 			setting.controlEl.createSpan({
@@ -353,6 +530,77 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 				cls: "stonerelay-sync-error-detail",
 				text: entry.lastSyncErrors.map((error) => `${error.rowId}: ${error.error}`).join("\n"),
 			});
+		}
+	}
+
+	private renderPageRow(containerEl: HTMLElement, entry: PageSyncEntry): void {
+		const desc = document.createDocumentFragment();
+		desc.append(document.createTextNode(`${entry.pageId}  ·  ${entry.outputFolder || "Default folder"}  ·  Page  ·  ${autoSyncEffectiveLabel(this.plugin.settings, entry, "page")}  ·  `));
+		desc.appendChild(this.formatPageLastSync(entry));
+		if (entry.lastFilePath) {
+			desc.append(document.createTextNode(`  ·  ${entry.lastFilePath}`));
+		}
+
+		const setting = new Setting(containerEl)
+			.setName(entry.name)
+			.setDesc(desc)
+			.addToggle((toggle) =>
+				toggle
+					.setValue(entry.enabled)
+					.onChange(async (value) => {
+						this.plugin.settings = updatePage(this.plugin.settings, {
+							...entry,
+							enabled: value,
+						});
+						await this.plugin.saveSettings();
+						this.display();
+					})
+			);
+		setting.addDropdown((dropdown) => {
+			dropdown.addOption("", "Ungrouped");
+			for (const group of this.plugin.settings.groups) {
+				dropdown.addOption(group.id, group.name);
+			}
+			dropdown
+				.setValue(entry.groupId ?? "")
+				.onChange(async (value) => {
+					this.plugin.settings = updatePage(this.plugin.settings, {
+						...entry,
+						groupId: value || null,
+					});
+					await this.plugin.saveSettings();
+					this.display();
+				});
+		});
+		setting.addDropdown((dropdown) => {
+			for (const [value, label] of Object.entries(AUTO_SYNC_OVERRIDE_LABELS)) {
+				dropdown.addOption(value, label);
+			}
+			dropdown
+				.setValue(entry.autoSync)
+				.onChange(async (value) => {
+					this.plugin.settings = updatePage(this.plugin.settings, {
+						...entry,
+						autoSync: value as AutoSyncOverride,
+					});
+					await this.plugin.saveSettings();
+					this.display();
+				});
+		});
+		if (this.plugin.isSyncActive(entry.id)) {
+			setting.controlEl.createSpan({
+				cls: "stonerelay-inline-status stonerelay-fetching",
+				text: "Refreshing...",
+			});
+		} else {
+			setting.addButton((btn) =>
+				btn
+					.setButtonText("Refresh")
+					.setIcon("refresh-cw")
+					.onClick(() => {
+						void this.plugin.refreshOnePage(entry);
+					})
+			);
 		}
 	}
 
@@ -542,6 +790,35 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 						state.validationError = undefined;
 					})
 			);
+
+		new Setting(wrapper)
+			.setName("Group")
+			.setDesc("Optional group for organizing this database in settings.")
+			.addDropdown((dropdown) => {
+				dropdown.addOption("", "Ungrouped");
+				for (const group of this.plugin.settings.groups) {
+					dropdown.addOption(group.id, group.name);
+				}
+				dropdown
+					.setValue(draft.groupId ?? "")
+					.onChange((value) => {
+						draft.groupId = value || null;
+					});
+			});
+
+		new Setting(wrapper)
+			.setName("Auto-sync")
+			.setDesc("Manual Pull and Push stay available regardless of this setting.")
+			.addDropdown((dropdown) => {
+				for (const [value, label] of Object.entries(AUTO_SYNC_OVERRIDE_LABELS)) {
+					dropdown.addOption(value, label);
+				}
+				dropdown
+					.setValue(draft.autoSync)
+					.onChange((value) => {
+						draft.autoSync = value as AutoSyncOverride;
+					});
+			});
 
 		const directionSection = wrapper.createDiv({ cls: "stonerelay-direction-section" });
 		directionSection.createEl("div", {
@@ -859,6 +1136,78 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 		el.setText(relativeTime(entry.lastSyncedAt));
 		el.title = syncHistoryTitle(entry);
 		return el;
+	}
+
+	private formatPageLastSync(entry: PageSyncEntry): HTMLElement {
+		const el = document.createElement("span");
+		if (entry.lastSyncStatus === "error") {
+			el.addClass("stonerelay-sync-error");
+			el.setText(`Error: ${truncate(entry.lastSyncError || "Refresh failed")}`);
+			return el;
+		}
+		if (!entry.lastSyncedAt) {
+			el.setText("Never refreshed");
+			return el;
+		}
+		el.setText(relativeTime(entry.lastSyncedAt));
+		el.title = `Last page refresh: ${entry.lastSyncedAt}\nLast status: ${entry.lastSyncStatus ?? "never"}`;
+		return el;
+	}
+}
+
+class PageImportPromptModal extends Modal {
+	private input = "";
+	private folder: string;
+
+	constructor(
+		app: App,
+		private readonly onSubmit: (input: string, folder: string) => Promise<void>,
+		defaultFolder: string
+	) {
+		super(app);
+		this.folder = defaultFolder || "_relay";
+	}
+
+	onOpen(): void {
+		this.contentEl.createEl("h2", { text: "Import standalone page" });
+		new Setting(this.contentEl)
+			.setName("Notion page URL or ID")
+			.setDesc("Accepts a Notion page URL, dashed UUID, or bare 32-character page ID.")
+			.addText((text) => text
+				.setPlaceholder("https://www.notion.so/... or 32-character page ID")
+				.onChange((value) => {
+					this.input = value.trim();
+				}));
+		new Setting(this.contentEl)
+			.setName("Vault folder")
+			.setDesc("The page refresh action will only update this page file.")
+			.addText((text) => text
+				.setPlaceholder("_relay/pages")
+				.setValue(this.folder)
+				.onChange((value) => {
+					this.folder = value.trim();
+				}));
+		new Setting(this.contentEl)
+			.addButton((btn) =>
+				btn
+					.setButtonText("Cancel")
+					.onClick(() => this.close())
+			)
+			.addButton((btn) =>
+				btn
+					.setButtonText("Import page")
+					.setCta()
+					.onClick(() => {
+						const input = this.input;
+						const folder = this.folder;
+						this.close();
+						void this.onSubmit(input, folder);
+					})
+			);
+	}
+
+	onClose(): void {
+		this.contentEl.empty();
 	}
 }
 

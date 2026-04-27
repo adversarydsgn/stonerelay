@@ -1,5 +1,6 @@
 import { Client } from "@notionhq/client";
-import { Conflict, SyncDirection, SyncedDatabase } from "./types";
+import { AutoSyncOverride, Conflict, NotionFreezeSettings, PageSyncEntry, SyncDirection, SyncGroup, SyncedDatabase } from "./types";
+import { effectiveAutoSyncEnabled } from "./settings-data";
 
 export interface DatabaseMetadata {
 	title: string;
@@ -62,6 +63,18 @@ export interface SyncHistoryTooltip {
 	lastError?: string;
 }
 
+export interface GroupedSyncEntries {
+	group: SyncGroup | null;
+	databases: SyncedDatabase[];
+	pages: PageSyncEntry[];
+}
+
+export const AUTO_SYNC_OVERRIDE_LABELS: Record<AutoSyncOverride, string> = {
+	inherit: "Inherit",
+	on: "On",
+	off: "Off",
+};
+
 export type FetchDatabaseMetadataResult =
 	| { ok: true; metadata: DatabaseMetadata }
 	| { ok: false; error: string };
@@ -82,6 +95,31 @@ export function parseNotionDbId(input: string): string | null {
 		const match = segment.match(/([a-f0-9]{32})$/i);
 		if (!match) return null;
 		candidate = match[1];
+	}
+
+	const hex = candidate.replace(/-/g, "");
+	return /^[a-f0-9]{32}$/i.test(hex) ? hex.toLowerCase() : null;
+}
+
+/**
+ * Extracts and normalizes a Notion page ID from a Notion URL, dashed UUID, or bare 32-char hex string.
+ */
+export function parseNotionPageId(input: string): string | null {
+	const trimmed = input.trim();
+	if (!trimmed) return null;
+
+	let candidate = trimmed;
+	if (/^https?:\/\//i.test(trimmed)) {
+		try {
+			const url = new URL(trimmed);
+			if (!url.hostname.endsWith("notion.so") && !url.hostname.endsWith("notion.site")) return null;
+			const segment = url.pathname.split("/").filter(Boolean).pop() ?? "";
+			const match = segment.match(/([a-f0-9]{32})$/i);
+			if (!match) return null;
+			candidate = match[1];
+		} catch {
+			return null;
+		}
 	}
 
 	const hex = candidate.replace(/-/g, "");
@@ -205,6 +243,10 @@ export function pendingConflictCount(entry: Pick<SyncedDatabase, "direction">, c
 	return entry.direction === "bidirectional" ? conflicts.length : 0;
 }
 
+export function pendingConflictCountForEntry(entryId: string, conflicts: Conflict[]): number {
+	return conflicts.filter((conflict) => !conflict.entryId || conflict.entryId === entryId).length;
+}
+
 export function syncHistoryTooltip(entry: Pick<SyncedDatabase, "lastSyncedAt" | "lastPulledAt" | "lastPushedAt" | "lastSyncStatus" | "lastSyncError">): SyncHistoryTooltip {
 	const tooltip: SyncHistoryTooltip = {
 		lastSyncedAt: entry.lastSyncedAt ?? null,
@@ -247,6 +289,40 @@ export function autoSyncReadiness(entry: Pick<SyncedDatabase, "direction" | "out
 		return `Blocked: ${entry.lastSyncStatus}`;
 	}
 	return "Ready for future auto-sync";
+}
+
+export function autoSyncEffectiveLabel(
+	settings: Pick<NotionFreezeSettings, "autoSyncEnabled" | "autoSyncDatabasesByDefault" | "autoSyncPagesByDefault">,
+	entry: Pick<SyncedDatabase, "autoSync"> | Pick<PageSyncEntry, "autoSync" | "type">,
+	entryType: "database" | "page"
+): string {
+	if (!settings.autoSyncEnabled) return "Auto-sync off globally";
+	if (entry.autoSync === "off") return "Auto-sync off";
+	if (entry.autoSync === "on") return "Auto-sync on";
+	return effectiveAutoSyncEnabled(settings, entry, entryType)
+		? "Auto-sync inherited on"
+		: "Auto-sync inherited off";
+}
+
+export function groupedSyncEntries(
+	groups: SyncGroup[],
+	databases: SyncedDatabase[],
+	pages: PageSyncEntry[]
+): GroupedSyncEntries[] {
+	const knownGroupIds = new Set(groups.map((group) => group.id));
+	const result: GroupedSyncEntries[] = [{
+		group: null,
+		databases: databases.filter((entry) => !entry.groupId || !knownGroupIds.has(entry.groupId)),
+		pages: pages.filter((entry) => !entry.groupId || !knownGroupIds.has(entry.groupId)),
+	}];
+	for (const group of groups) {
+		result.push({
+			group,
+			databases: databases.filter((entry) => entry.groupId === group.id),
+			pages: pages.filter((entry) => entry.groupId === group.id),
+		});
+	}
+	return result;
 }
 
 /**

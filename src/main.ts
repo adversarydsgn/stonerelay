@@ -1,23 +1,28 @@
-import { addIcon, App, Notice, Plugin, SuggestModal, normalizePath } from "obsidian";
-import { Conflict, NotionFreezeSettings, DatabaseSyncResult, SyncError, SyncRunOptions, SyncRunType, SyncedDatabase } from "./types";
+import { addIcon, App, Modal, Notice, Plugin, Setting, SuggestModal, normalizePath, TFile } from "obsidian";
+import { Conflict, NotionFreezeSettings, DatabaseSyncResult, PageSyncEntry, SyncError, SyncRunOptions, SyncRunType, SyncedDatabase } from "./types";
 import { NotionFreezeSettingTab } from "./settings";
 import { FreezeModal, FrozenDatabase } from "./freeze-modal";
 import { createNotionClient, normalizeNotionId } from "./notion-client";
 import { freshDatabaseImport, refreshDatabase } from "./database-freezer";
-import { migrateData, resolveErrorLogFolder, resolveOutputFolder, syncAll, updateDatabase } from "./settings-data";
+import { migrateData, resolveErrorLogFolder, resolveOutputFolder, syncAll, updateDatabase, updatePage } from "./settings-data";
 import { pushDatabase } from "./push";
 import { applyPhaseTransition, syncErrorsFromMessages, SyncCancelled } from "./sync-state";
 import { PluginDataAdapter, writePluginDataAtomic } from "./plugin-data";
+import { AutoSyncJob, AutoSyncQueue, createBackgroundConflict, findAutoSyncEntryForPath, isAutoSyncEligible } from "./auto-sync";
+import { importStandalonePage, refreshStandalonePage } from "./page-sync";
+import { parseNotionPageId } from "./settings-ux";
 
 export default class NotionFreezePlugin extends Plugin {
 	settings: NotionFreezeSettings = migrateData(null);
 	private syncControllers = new Map<string, AbortController>();
 	private cancellingAll = false;
+	private autoSyncQueue = new AutoSyncQueue((job) => this.runAutoSyncJob(job));
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
 		await this.markInterruptedSyncs();
 		this.addSettingTab(new NotionFreezeSettingTab(this.app, this));
+		this.registerAutoSyncWatchers();
 
 		addIcon(
 			"notion-db-sync",
@@ -60,12 +65,22 @@ export default class NotionFreezePlugin extends Plugin {
 			name: "Stonerelay: Push one database",
 			callback: () => this.openConfiguredDatabasePicker("push"),
 		});
+
+		this.addCommand({
+			id: "stonerelay:import-page",
+			name: "Stonerelay: Import standalone page",
+			callback: () => {
+				new PageImportModal(this.app, this, (input, outputFolder) => {
+					void this.importStandalonePageInput(input, outputFolder);
+				}).open();
+			},
+		});
 	}
 
 	async loadSettings(): Promise<void> {
 		const raw = await this.loadData();
 		this.settings = migrateData(raw);
-		if (!raw?.schemaVersion || raw.schemaVersion < 4) {
+		if (!raw?.schemaVersion || raw.schemaVersion < 5) {
 			await this.saveSettings();
 		}
 	}
@@ -307,8 +322,99 @@ export default class NotionFreezePlugin extends Plugin {
 		await this.syncOneConfiguredDatabase(entry, "retry", retryIds);
 	}
 
+	async importStandalonePageInput(input: string, outputFolder?: string): Promise<PageSyncEntry | null> {
+		const pageId = parseNotionPageId(input);
+		if (!pageId) {
+			new Notice("Invalid Notion page URL or ID.");
+			return null;
+		}
+		if (!this.settings.apiKey) {
+			new Notice("Notion API key not set. Configure in plugin settings.");
+			throw new Error("Notion API key not set.");
+		}
+		const client = createNotionClient(this.settings.apiKey);
+		const folder = outputFolder?.trim() || this.settings.defaultOutputFolder || "_relay";
+		const result = await importStandalonePage(this.app, client, pageId, folder);
+		const now = new Date().toISOString();
+		const existing = this.settings.pages.find((page) => page.pageId === pageId);
+		const nextPage: PageSyncEntry = {
+			id: existing?.id ?? crypto.randomUUID(),
+			type: "page",
+			name: result.title,
+			pageId,
+			outputFolder: folder,
+			errorLogFolder: existing?.errorLogFolder ?? "",
+			groupId: existing?.groupId ?? null,
+			enabled: existing?.enabled ?? true,
+			autoSync: existing?.autoSync ?? "inherit",
+			lastSyncedAt: now,
+			lastSyncStatus: "ok",
+			lastSyncError: undefined,
+			current_sync_id: null,
+			lastFilePath: result.filePath,
+		};
+		this.settings = existing
+			? updatePage(this.settings, nextPage)
+			: { ...this.settings, pages: [...this.settings.pages, nextPage] };
+		await this.saveSettings();
+		(this.app.workspace as any).trigger("stonerelay:settings-updated");
+		new Notice(`Imported page: ${result.title}`);
+		return nextPage;
+	}
+
+	async refreshOnePage(entry: PageSyncEntry): Promise<void> {
+		if (this.isSyncActive(entry.id)) {
+			new Notice(`Sync already running for ${entry.name}.`);
+			return;
+		}
+		if (!this.settings.apiKey) {
+			new Notice("Notion API key not set. Configure in plugin settings.");
+			throw new Error("Notion API key not set.");
+		}
+		const syncId = crypto.randomUUID();
+		this.syncControllers.set(entry.id, new AbortController());
+		this.settings = updatePage(this.settings, {
+			...entry,
+			current_sync_id: syncId,
+		});
+		await this.saveSettings();
+		try {
+			const client = createNotionClient(this.settings.apiKey);
+			const result = await refreshStandalonePage(this.app, client, entry);
+			const now = new Date().toISOString();
+			this.settings = updatePage(this.settings, {
+				...entry,
+				name: result.title,
+				lastSyncedAt: now,
+				lastSyncStatus: "ok",
+				lastSyncError: undefined,
+				current_sync_id: null,
+				lastFilePath: result.filePath,
+			});
+			await this.saveSettings();
+			new Notice(`Refreshed page: ${result.title}`);
+		} catch (err) {
+			const now = new Date().toISOString();
+			const message = err instanceof Error ? err.message : String(err);
+			this.settings = updatePage(this.settings, {
+				...entry,
+				lastSyncStatus: "error",
+				lastSyncError: message.slice(0, 200),
+				current_sync_id: null,
+			});
+			await this.writePageErrorLog(entry, "refresh", now, message, entry.lastFilePath ?? undefined);
+			await this.saveSettings();
+			throw err;
+		} finally {
+			this.finishSync(entry.id);
+		}
+		(this.app.workspace as any).trigger("stonerelay:settings-updated");
+	}
+
 	async applyConflictResolution(conflict: Conflict, action: "pull" | "push"): Promise<void> {
-		const entry = this.settings.databases.find((candidate) => candidate.direction === "bidirectional");
+		const entry = this.settings.databases.find((candidate) =>
+			conflict.entryId ? candidate.id === conflict.entryId : candidate.direction === "bidirectional"
+		);
 		if (!entry) throw new Error("No bidirectional database configured for conflict resolution.");
 		if (action === "pull") {
 			await this.syncOneConfiguredDatabase(entry, "retry", [conflict.rowId]);
@@ -589,6 +695,16 @@ export default class NotionFreezePlugin extends Plugin {
 					lastSyncError: "Previous sync was interrupted. Resume from cursor or restart from beginning.",
 				};
 			}),
+			pages: this.settings.pages.map((entry) => {
+				if (!entry.current_sync_id) return entry;
+				changed = true;
+				return {
+					...entry,
+					current_sync_id: null,
+					lastSyncStatus: "interrupted",
+					lastSyncError: "Previous page refresh was interrupted. Refresh again when ready.",
+				};
+			}),
 		};
 		if (changed) {
 			try {
@@ -638,6 +754,30 @@ export default class NotionFreezePlugin extends Plugin {
 		await this.writeVaultLog(folder, `${timestampedFilePrefix(timestamp)}-${entry.id}-${direction}.md`, body);
 	}
 
+	private async writePageErrorLog(
+		entry: PageSyncEntry,
+		runType: "refresh" | "auto-refresh",
+		timestamp: string,
+		error: string,
+		filePath?: string
+	): Promise<void> {
+		const folder = resolveErrorLogFolder(this.settings, entry);
+		if (!folder || !isSafeRelativePath(folder)) return;
+		const body = [
+			"# Stonerelay page sync error",
+			"",
+			`timestamp: ${timestamp}`,
+			"entry_type: page",
+			`entry_name: ${entry.name}`,
+			`notion_id: ${entry.pageId}`,
+			`run_type: ${runType}`,
+			`file_path: ${filePath ?? "none"}`,
+			`message: ${error}`,
+			"",
+		].join("\n");
+		await this.writeVaultLog(folder, `${timestampedFilePrefix(timestamp)}-${entry.id}-${runType}.md`, body);
+	}
+
 	private async writeConflictLog(entry: SyncedDatabase, conflict: Conflict): Promise<void> {
 		const folder = resolveErrorLogFolder(this.settings, entry);
 		if (!folder || !isSafeRelativePath(folder)) return;
@@ -655,6 +795,76 @@ export default class NotionFreezePlugin extends Plugin {
 			"",
 		].join("\n");
 		await this.writeVaultLog(folder, `${timestampedFilePrefix(conflict.detectedAt)}-${entry.id}-conflict-${safeFileToken(conflict.rowId)}.md`, body);
+	}
+
+	private registerAutoSyncWatchers(): void {
+		this.registerEvent((this.app.vault as any).on("modify", (file: unknown) => {
+			this.handleVaultAutoSyncEvent(file);
+		}));
+		this.registerEvent((this.app.vault as any).on("create", (file: unknown) => {
+			this.handleVaultAutoSyncEvent(file);
+		}));
+		this.registerEvent((this.app.vault as any).on("rename", (file: unknown) => {
+			this.handleVaultAutoSyncEvent(file);
+		}));
+	}
+
+	private handleVaultAutoSyncEvent(file: unknown): void {
+		if (!this.settings.autoSyncEnabled || !(file instanceof TFile) || file.extension !== "md") return;
+		const candidate = findAutoSyncEntryForPath(this.settings, file.path);
+		if (!candidate || !isAutoSyncEligible(this.settings, candidate)) return;
+		if (candidate.type === "database") {
+			const conflict = this.detectBackgroundCollision(candidate.entry, file);
+			if (conflict) {
+				this.settings = {
+					...this.settings,
+					pendingConflicts: upsertConflict(this.settings.pendingConflicts, conflict),
+				};
+				void this.writeConflictLog(candidate.entry, conflict);
+				void this.saveSettings();
+				(this.app.workspace as any).trigger("stonerelay:settings-updated");
+				return;
+			}
+		}
+		this.autoSyncQueue.enqueue({
+			entryId: candidate.entry.id,
+			entryType: candidate.type,
+			path: file.path,
+			runType: candidate.type === "page" ? "refresh" : "push",
+		});
+	}
+
+	private async runAutoSyncJob(job: AutoSyncJob): Promise<void> {
+		if (job.entryType === "database") {
+			const entry = this.settings.databases.find((candidate) => candidate.id === job.entryId);
+			if (!entry || !isAutoSyncEligible(this.settings, { type: "database", entry })) return;
+			await this.pushOneConfiguredDatabase(entry);
+			return;
+		}
+		const page = this.settings.pages.find((candidate) => candidate.id === job.entryId);
+		if (!page || !isAutoSyncEligible(this.settings, { type: "page", entry: page })) return;
+		await this.refreshOnePage(page);
+	}
+
+	private detectBackgroundCollision(entry: SyncedDatabase, file: TFile): Conflict | null {
+		if (!entry.lastSyncedAt) return null;
+		const cache = this.app.metadataCache.getFileCache(file);
+		const notionEditedAt = cache?.frontmatter?.["notion-last-edited"];
+		const rowId = cache?.frontmatter?.["notion-id"];
+		if (typeof notionEditedAt !== "string" || typeof rowId !== "string") return null;
+		const lastSynced = Date.parse(entry.lastSyncedAt);
+		const notionChanged = Date.parse(notionEditedAt) > lastSynced;
+		const vaultChanged = file.stat.mtime > lastSynced;
+		if (!notionChanged || !vaultChanged) return null;
+		return createBackgroundConflict({
+			entryId: entry.id,
+			entryType: "database",
+			rowId,
+			notionEditedAt,
+			vaultEditedAt: new Date(file.stat.mtime).toISOString(),
+			notionSnapshot: { rowId, lastEditedTime: notionEditedAt },
+			vaultSnapshot: { path: file.path, mtime: file.stat.mtime, frontmatter: cache?.frontmatter ?? {} },
+		});
 	}
 
 	private async writeVaultLog(folder: string, filename: string, body: string): Promise<void> {
@@ -726,6 +936,56 @@ class DatabasePickerModal extends SuggestModal<SyncedDatabase> {
 
 	onChooseSuggestion(entry: SyncedDatabase): void {
 		this.onChoose(entry);
+	}
+}
+
+class PageImportModal extends Modal {
+	private input = "";
+	private outputFolder = "";
+
+	constructor(
+		app: App,
+		private readonly plugin: NotionFreezePlugin,
+		private readonly onSubmit: (input: string, outputFolder: string) => void
+	) {
+		super(app);
+	}
+
+	onOpen(): void {
+		const { contentEl } = this;
+		contentEl.empty();
+		contentEl.createEl("h2", { text: "Import standalone page" });
+		new Setting(contentEl)
+			.setName("Notion page URL or ID")
+			.setDesc("Paste a Notion page link, dashed UUID, or bare 32-character page ID.")
+			.addText((text) => text
+				.setPlaceholder("https://www.notion.so/... or 32-character page ID")
+				.onChange((value) => {
+					this.input = value.trim();
+				}));
+		new Setting(contentEl)
+			.setName("Vault folder")
+			.setDesc("Only this standalone page will be written here.")
+			.addText((text) => text
+				.setPlaceholder(this.plugin.settings.defaultOutputFolder || "_relay")
+				.onChange((value) => {
+					this.outputFolder = value.trim();
+				}));
+		new Setting(contentEl)
+			.addButton((button) => button
+				.setButtonText("Cancel")
+				.onClick(() => this.close()))
+			.addButton((button) => button
+				.setButtonText("Import page")
+				.setCta()
+				.onClick(() => {
+					this.close();
+					this.onSubmit(this.input, this.outputFolder);
+				}));
+	}
+
+	onClose(): void {
+		this.contentEl.empty();
 	}
 }
 
