@@ -7,6 +7,7 @@ import {
 	migrateData,
 	removeDatabase,
 	removeGroup,
+	resolveDatabaseContentFolder,
 	resolveErrorLogFolder,
 	resolveOutputFolder,
 	sharedOutputFolderDatabases,
@@ -331,6 +332,19 @@ describe("output folder resolution", () => {
 		expect(resolveOutputFolder(settings(), database({ outputFolder: "" }))).toBe("_relay");
 		expect(resolveOutputFolder({ ...settings(), defaultOutputFolder: "" }, database({ outputFolder: "" }))).toBe("_relay");
 		expect(resolveOutputFolder(settings(), database({ outputFolder: "Custom" }))).toBe("Custom");
+	});
+
+	it("resolves the actual database content folder when nesting is enabled", () => {
+		expect(resolveDatabaseContentFolder(settings(), database({
+			name: "Bugs DB",
+			outputFolder: "3. System/",
+			nest_under_db_name: true,
+		}))).toBe("3. System/Bugs DB");
+		expect(resolveDatabaseContentFolder(settings(), database({
+			name: "Bugs DB",
+			outputFolder: "3. System/",
+			nest_under_db_name: false,
+		}))).toBe("3. System/");
 	});
 });
 

@@ -16,8 +16,47 @@ import {
 	syncedDatabasesHeader,
 	trimApiKey,
 } from "../src/settings-ux";
+import { NotionFreezeSettings, SyncedDatabase } from "../src/types";
 
 const rawId = "0123456789abcdef0123456789abcdef";
+
+function settings(databases: Partial<SyncedDatabase>[]): NotionFreezeSettings {
+	return {
+		apiKey: "",
+		defaultOutputFolder: "_relay",
+		defaultErrorLogFolder: "",
+		databases: databases.map((entry, index) => ({
+			id: entry.id ?? `db-${index}`,
+			name: entry.name ?? `DB ${index}`,
+			databaseId: entry.databaseId ?? rawId,
+			outputFolder: entry.outputFolder ?? "_relay",
+			errorLogFolder: entry.errorLogFolder ?? "",
+			groupId: entry.groupId ?? null,
+			autoSync: entry.autoSync ?? "inherit",
+			direction: entry.direction ?? "bidirectional",
+			enabled: entry.enabled ?? true,
+			lastSyncedAt: entry.lastSyncedAt ?? null,
+			lastSyncStatus: entry.lastSyncStatus ?? "never",
+			lastPulledAt: entry.lastPulledAt ?? null,
+			lastPushedAt: entry.lastPushedAt ?? null,
+			current_phase: entry.current_phase ?? "phase_2",
+			initial_seed_direction: entry.initial_seed_direction ?? "pull",
+			source_of_truth: entry.source_of_truth ?? "notion",
+			first_sync_completed_at: entry.first_sync_completed_at ?? null,
+			nest_under_db_name: entry.nest_under_db_name ?? true,
+			current_sync_id: entry.current_sync_id ?? null,
+			lastCommittedRowId: entry.lastCommittedRowId ?? null,
+			lastSyncErrors: entry.lastSyncErrors ?? [],
+		})),
+		pages: [],
+		groups: [],
+		pendingConflicts: [],
+		autoSyncEnabled: false,
+		autoSyncDatabasesByDefault: false,
+		autoSyncPagesByDefault: false,
+		schemaVersion: 5,
+	};
+}
 
 describe("parseNotionDbId", () => {
 	it("extracts a database ID from Notion URLs", () => {
@@ -70,27 +109,34 @@ describe("grouped sync entries", () => {
 
 describe("folder scope warnings", () => {
 	it("warns when another database shares the same push folder", () => {
-		const databases = [
-			{ id: "bugs", outputFolder: "3. System/" },
-			{ id: "people", outputFolder: "3. System" },
-			{ id: "projects", outputFolder: "1. Projects" },
-		] as never;
+		const data = settings([
+			{ id: "bugs", name: "Bugs", outputFolder: "3. System/", nest_under_db_name: false },
+			{ id: "people", name: "People", outputFolder: "3. System", nest_under_db_name: false },
+			{ id: "projects", name: "Projects", outputFolder: "1. Projects", nest_under_db_name: false },
+		]);
 
-		expect(folderScopeWarning(databases[0], databases)).toEqual({
+		expect(folderScopeWarning(data, data.databases[0])).toEqual({
 			sharedCount: 1,
 			message: "Folder shared with 1 other database; Push scans that folder.",
 		});
 	});
 
-	it("does not warn for unique or blank folders", () => {
-		const databases = [
-			{ id: "bugs", outputFolder: "_relay/bugs" },
-			{ id: "people", outputFolder: "_relay/people" },
-			{ id: "blank", outputFolder: "" },
-		] as never;
+	it("does not warn when databases share a parent folder but nest under different database folders", () => {
+		const data = settings([
+			{ id: "bugs", name: "Bugs DB", outputFolder: "3. System/" },
+			{ id: "people", name: "People DB", outputFolder: "3. System" },
+		]);
 
-		expect(folderScopeWarning(databases[0], databases)).toBeNull();
-		expect(folderScopeWarning(databases[2], databases)).toBeNull();
+		expect(folderScopeWarning(data, data.databases[0])).toBeNull();
+	});
+
+	it("does not warn for unique folders", () => {
+		const data = settings([
+			{ id: "bugs", outputFolder: "_relay/bugs", nest_under_db_name: false },
+			{ id: "people", outputFolder: "_relay/people", nest_under_db_name: false },
+		]);
+
+		expect(folderScopeWarning(data, data.databases[0])).toBeNull();
 	});
 });
 

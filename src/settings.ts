@@ -430,7 +430,7 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 		desc.append(document.createTextNode(`${entry.databaseId}  ·  ${entry.outputFolder || "Default folder"}  ·  ${directionIcon(entry)} ${directionLabelShort(entry)}  ·  ${lastEditSideIndicator(entry, this.plugin.settings.pendingConflicts)}  ·  `));
 		desc.appendChild(this.formatLastSync(entry));
 		desc.append(document.createTextNode(`  ·  ${autoSyncReadiness(entry, this.plugin.settings.pendingConflicts)}  ·  ${autoSyncEffectiveLabel(this.plugin.settings, entry, "database")}`));
-		const scopeWarning = folderScopeWarning(entry, this.plugin.settings.databases);
+		const scopeWarning = folderScopeWarning(this.plugin.settings, entry);
 		if (scopeWarning && canPush(entry)) {
 			desc.append(document.createTextNode(`  ·  ${scopeWarning.message}`));
 		}

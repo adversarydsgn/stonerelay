@@ -2,6 +2,17 @@
 
 Fork-side changes to `stonerelay` (vs. upstream `ran-codes/obsidian-notion-database-sync`).
 
+## v0.9.5 — 2026-04-27
+
+Uses the actual database content folder for push safety.
+
+**Behavior notes:**
+- Push now targets the same database folder that Pull/Refresh uses when files are nested under the database name.
+- Existing pulled folders are detected from `notion-database-id` frontmatter before falling back to configured path previews.
+- Shared parent folders such as `3. System/` no longer require every database setting to point at the nested subfolder by hand.
+- Shared-folder blocking still applies when two databases resolve to the same actual content folder.
+- Settings warnings now use the resolved content folder instead of flagging safe shared parent folders.
+
 ## v0.9.4 — 2026-04-27
 
 Blocks unsafe database pushes from shared output folders.

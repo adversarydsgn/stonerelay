@@ -1,6 +1,6 @@
 import { Client } from "@notionhq/client";
 import { AutoSyncOverride, Conflict, NotionFreezeSettings, PageSyncEntry, SyncDirection, SyncError, SyncGroup, SyncedDatabase } from "./types";
-import { effectiveAutoSyncEnabled } from "./settings-data";
+import { effectiveAutoSyncEnabled, resolveDatabaseContentFolder } from "./settings-data";
 
 export interface DatabaseMetadata {
 	title: string;
@@ -337,13 +337,13 @@ export function groupedSyncEntries(
 }
 
 export function folderScopeWarning(
-	entry: Pick<SyncedDatabase, "id" | "outputFolder">,
-	databases: Pick<SyncedDatabase, "id" | "outputFolder">[]
+	settings: NotionFreezeSettings,
+	entry: SyncedDatabase
 ): FolderScopeWarning | null {
-	const folder = normalizeFolder(entry.outputFolder);
+	const folder = normalizeFolder(resolveDatabaseContentFolder(settings, entry));
 	if (!folder) return null;
-	const sharedCount = databases.filter((candidate) =>
-		candidate.id !== entry.id && normalizeFolder(candidate.outputFolder) === folder
+	const sharedCount = settings.databases.filter((candidate) =>
+		candidate.id !== entry.id && normalizeFolder(resolveDatabaseContentFolder(settings, candidate)) === folder
 	).length;
 	if (sharedCount === 0) return null;
 	return {

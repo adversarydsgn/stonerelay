@@ -203,6 +203,16 @@ export function resolveOutputFolder(
 	);
 }
 
+export function resolveDatabaseContentFolder(
+	settings: NotionFreezeSettings,
+	entry: Pick<SyncedDatabase, "name" | "outputFolder" | "nest_under_db_name">
+): string {
+	const folder = resolveOutputFolder(settings, entry);
+	if (!entry.nest_under_db_name) return folder;
+	const name = safeFolderName(entry.name.trim() || "Untitled Database");
+	return `${folder.replace(/\/+$/g, "")}/${name}`;
+}
+
 export function sharedOutputFolderDatabases(
 	settings: Pick<NotionFreezeSettings, "databases" | "defaultOutputFolder">,
 	entry: Pick<SyncedDatabase, "id" | "outputFolder">
@@ -358,6 +368,10 @@ function shouldRunForMode(direction: SyncDirection, mode: SyncMode): boolean {
 
 function normalizeFolder(path: string): string {
 	return path.replace(/\\/g, "/").replace(/\/+/g, "/").replace(/^\/+|\/+$/g, "").toLowerCase();
+}
+
+function safeFolderName(name: string): string {
+	return name.replace(/[\\/:*?"<>|]/g, "-").trim() || "Untitled Database";
 }
 
 function normalizeDirection(direction: unknown): SyncDirection {

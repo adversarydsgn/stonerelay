@@ -4,7 +4,7 @@ import { NotionFreezeSettingTab } from "./settings";
 import { FreezeModal, FrozenDatabase } from "./freeze-modal";
 import { createNotionClient, normalizeNotionId } from "./notion-client";
 import { freshDatabaseImport, refreshDatabase } from "./database-freezer";
-import { migrateData, resolveErrorLogFolder, resolveOutputFolder, sharedOutputFolderDatabases, syncAll, updateDatabase, updatePage } from "./settings-data";
+import { migrateData, resolveDatabaseContentFolder, resolveErrorLogFolder, resolveOutputFolder, syncAll, updateDatabase, updatePage } from "./settings-data";
 import { pushDatabase } from "./push";
 import { applyPhaseTransition, syncErrorsFromMessages, SyncCancelled } from "./sync-state";
 import { PluginDataAdapter, writePluginDataAtomic } from "./plugin-data";
@@ -155,7 +155,7 @@ export default class NotionFreezePlugin extends Plugin {
 			this.settings,
 			async (entry, outputFolder) => {
 				this.assertSafePushFolder(entry);
-				return this.pushConfiguredDatabase(entry, outputFolder);
+				return this.pushConfiguredDatabase(entry, this.resolvePushSourceFolder(entry));
 			},
 			(message) => new Notice(message),
 			"push"
@@ -262,7 +262,7 @@ export default class NotionFreezePlugin extends Plugin {
 		const run = await this.beginSync(entry, type, retryRowIds);
 		try {
 			new Notice(`Pushing ${entry.name}...`);
-			const result = await this.pushConfiguredDatabase(entry, resolveOutputFolder(this.settings, entry), run.options);
+			const result = await this.pushConfiguredDatabase(entry, this.resolvePushSourceFolder(entry), run.options);
 			const now = new Date().toISOString();
 			const errors = run.errors.length > 0
 				? run.errors
@@ -334,11 +334,20 @@ export default class NotionFreezePlugin extends Plugin {
 	}
 
 	private pushFolderBlocker(entry: SyncedDatabase): string | null {
-		const shared = sharedOutputFolderDatabases(this.settings, entry);
+		const sourceFolder = this.resolvePushSourceFolder(entry);
+		const shared = this.settings.databases.filter((candidate) =>
+			candidate.id !== entry.id &&
+			normalizeFolder(this.resolvePushSourceFolder(candidate)) === normalizeFolder(sourceFolder)
+		);
 		if (shared.length === 0) return null;
 		const names = shared.map((db) => db.name).slice(0, 3).join(", ");
 		const suffix = shared.length > 3 ? `, +${shared.length - 3} more` : "";
-		return `Push blocked for ${entry.name}: output folder "${resolveOutputFolder(this.settings, entry)}" is shared with ${names}${suffix}. Use a database-specific folder first.`;
+		return `Push blocked for ${entry.name}: source folder "${sourceFolder}" is shared with ${names}${suffix}. Use a database-specific folder first.`;
+	}
+
+	private resolvePushSourceFolder(entry: SyncedDatabase): string {
+		const existing = this.findFrozenDatabase(normalizeNotionId(entry.databaseId));
+		return existing?.folderPath ?? resolveDatabaseContentFolder(this.settings, entry);
 	}
 
 	async importStandalonePageInput(input: string, outputFolder?: string): Promise<PageSyncEntry | null> {
@@ -1061,6 +1070,10 @@ function timestampedFilePrefix(iso: string): string {
 
 function safeFileToken(value: string): string {
 	return value.replace(/[^a-z0-9_-]+/gi, "-").slice(0, 80) || "row";
+}
+
+function normalizeFolder(path: string): string {
+	return path.replace(/\\/g, "/").replace(/\/+/g, "/").replace(/^\/+|\/+$/g, "").toLowerCase();
 }
 
 function isSafeRelativePath(path: string): boolean {
