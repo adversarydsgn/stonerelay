@@ -2,6 +2,16 @@
 
 Fork-side changes to `stonerelay` (vs. upstream `ran-codes/obsidian-notion-database-sync`).
 
+## v0.9.4 — 2026-04-27
+
+Blocks unsafe database pushes from shared output folders.
+
+**Behavior notes:**
+- Manual Push now refuses to run when a database resolves to the same output folder as another configured database.
+- Push All applies the same guard per database, marking unsafe shared-folder entries as errored instead of scanning a broad mixed folder.
+- The guard uses resolved output folders, so blank per-database folders that fall back to the same default are also treated as unsafe for push.
+- Pull behavior remains available; the guard only blocks push-side vault-to-Notion writes.
+
 ## v0.9.3 — 2026-04-27
 
 Polishes settings group controls and makes sync-warning floods readable.

@@ -203,6 +203,18 @@ export function resolveOutputFolder(
 	);
 }
 
+export function sharedOutputFolderDatabases(
+	settings: Pick<NotionFreezeSettings, "databases" | "defaultOutputFolder">,
+	entry: Pick<SyncedDatabase, "id" | "outputFolder">
+): SyncedDatabase[] {
+	const folder = normalizeFolder(resolveOutputFolder(settings as NotionFreezeSettings, entry));
+	if (!folder) return [];
+	return settings.databases.filter((candidate) =>
+		candidate.id !== entry.id &&
+		normalizeFolder(resolveOutputFolder(settings as NotionFreezeSettings, candidate)) === folder
+	);
+}
+
 export function resolveErrorLogFolder(
 	settings: Pick<NotionFreezeSettings, "defaultErrorLogFolder">,
 	entry?: Pick<SyncedDatabase | PageSyncEntry, "errorLogFolder">
@@ -342,6 +354,10 @@ export async function writeJsonAtomic(path: string, value: unknown): Promise<voi
 
 function shouldRunForMode(direction: SyncDirection, mode: SyncMode): boolean {
 	return direction === mode || direction === "bidirectional";
+}
+
+function normalizeFolder(path: string): string {
+	return path.replace(/\\/g, "/").replace(/\/+/g, "/").replace(/^\/+|\/+$/g, "").toLowerCase();
 }
 
 function normalizeDirection(direction: unknown): SyncDirection {

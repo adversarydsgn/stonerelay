@@ -4,7 +4,7 @@ import { NotionFreezeSettingTab } from "./settings";
 import { FreezeModal, FrozenDatabase } from "./freeze-modal";
 import { createNotionClient, normalizeNotionId } from "./notion-client";
 import { freshDatabaseImport, refreshDatabase } from "./database-freezer";
-import { migrateData, resolveErrorLogFolder, resolveOutputFolder, syncAll, updateDatabase, updatePage } from "./settings-data";
+import { migrateData, resolveErrorLogFolder, resolveOutputFolder, sharedOutputFolderDatabases, syncAll, updateDatabase, updatePage } from "./settings-data";
 import { pushDatabase } from "./push";
 import { applyPhaseTransition, syncErrorsFromMessages, SyncCancelled } from "./sync-state";
 import { PluginDataAdapter, writePluginDataAtomic } from "./plugin-data";
@@ -154,6 +154,7 @@ export default class NotionFreezePlugin extends Plugin {
 		const result = await syncAll(
 			this.settings,
 			async (entry, outputFolder) => {
+				this.assertSafePushFolder(entry);
 				return this.pushConfiguredDatabase(entry, outputFolder);
 			},
 			(message) => new Notice(message),
@@ -253,6 +254,11 @@ export default class NotionFreezePlugin extends Plugin {
 			new Notice(`Sync already running for ${entry.name}.`);
 			return;
 		}
+		const unsafeFolder = this.pushFolderBlocker(entry);
+		if (unsafeFolder) {
+			new Notice(unsafeFolder);
+			return;
+		}
 		const run = await this.beginSync(entry, type, retryRowIds);
 		try {
 			new Notice(`Pushing ${entry.name}...`);
@@ -320,6 +326,19 @@ export default class NotionFreezePlugin extends Plugin {
 			return;
 		}
 		await this.syncOneConfiguredDatabase(entry, "retry", retryIds);
+	}
+
+	private assertSafePushFolder(entry: SyncedDatabase): void {
+		const message = this.pushFolderBlocker(entry);
+		if (message) throw new Error(message);
+	}
+
+	private pushFolderBlocker(entry: SyncedDatabase): string | null {
+		const shared = sharedOutputFolderDatabases(this.settings, entry);
+		if (shared.length === 0) return null;
+		const names = shared.map((db) => db.name).slice(0, 3).join(", ");
+		const suffix = shared.length > 3 ? `, +${shared.length - 3} more` : "";
+		return `Push blocked for ${entry.name}: output folder "${resolveOutputFolder(this.settings, entry)}" is shared with ${names}${suffix}. Use a database-specific folder first.`;
 	}
 
 	async importStandalonePageInput(input: string, outputFolder?: string): Promise<PageSyncEntry | null> {

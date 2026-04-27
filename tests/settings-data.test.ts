@@ -9,6 +9,7 @@ import {
 	removeGroup,
 	resolveErrorLogFolder,
 	resolveOutputFolder,
+	sharedOutputFolderDatabases,
 	syncAll,
 } from "../src/settings-data";
 import { NotionFreezeSettings, PageSyncEntry, SyncedDatabase } from "../src/types";
@@ -169,6 +170,23 @@ describe("settings data migration", () => {
 			lastCommittedRowId: null,
 			lastSyncErrors: [],
 		});
+	});
+});
+
+describe("shared output folder detection", () => {
+	it("finds databases that would push from the same folder", () => {
+		const bugs = database({ id: "bugs", name: "Bugs", outputFolder: "3. System/" });
+		const people = database({ id: "people", name: "People", outputFolder: "3. System" });
+		const projects = database({ id: "projects", name: "Projects", outputFolder: "1. Projects" });
+
+		expect(sharedOutputFolderDatabases(settings([bugs, people, projects]), bugs).map((entry) => entry.name)).toEqual(["People"]);
+	});
+
+	it("uses the resolved default folder when entry folders are blank", () => {
+		const first = database({ id: "first", outputFolder: "" });
+		const second = database({ id: "second", outputFolder: "" });
+
+		expect(sharedOutputFolderDatabases(settings([first, second]), first).map((entry) => entry.id)).toEqual(["second"]);
 	});
 });
 
