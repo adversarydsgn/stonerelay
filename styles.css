@@ -23,7 +23,9 @@
 	border-radius: 6px;
 	color: var(--text-error);
 	margin: 0 0 12px;
+	max-height: 220px;
 	overflow-x: auto;
+	overflow-y: auto;
 	padding: 10px 12px;
 	white-space: pre-wrap;
 }
@@ -164,6 +166,61 @@
 	color: var(--text-normal);
 	font-weight: var(--font-semibold);
 	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.stonerelay-sync-group-actions {
+	align-items: center;
+	display: flex;
+	gap: 4px;
+	margin-left: auto;
+}
+
+.stonerelay-group-rename-input {
+	flex: 1 1 180px;
+	min-width: 120px;
+}
+
+.stonerelay-create-group-setting .setting-item-control {
+	flex-wrap: wrap;
+}
+
+.stonerelay-sync-entry-setting {
+	align-items: flex-start;
+	flex-wrap: wrap;
+	gap: 8px;
+}
+
+.stonerelay-sync-entry-setting .setting-item-info {
+	flex: 1 1 240px;
+	min-width: 180px;
+	overflow: hidden;
+}
+
+.stonerelay-sync-entry-setting .setting-item-name {
+	max-width: 100%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.stonerelay-sync-entry-setting .setting-item-description {
+	overflow-wrap: anywhere;
+	white-space: normal;
+}
+
+.stonerelay-sync-entry-setting .setting-item-control {
+	flex: 1 1 360px;
+	flex-wrap: wrap;
+	gap: 6px;
+	justify-content: flex-end;
+	min-width: min(280px, 100%);
+}
+
+.stonerelay-sync-entry-setting select {
+	max-width: 170px;
 }
 
 .stonerelay-db-name-link,

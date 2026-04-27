@@ -1,5 +1,5 @@
 import { Client } from "@notionhq/client";
-import { AutoSyncOverride, Conflict, NotionFreezeSettings, PageSyncEntry, SyncDirection, SyncGroup, SyncedDatabase } from "./types";
+import { AutoSyncOverride, Conflict, NotionFreezeSettings, PageSyncEntry, SyncDirection, SyncError, SyncGroup, SyncedDatabase } from "./types";
 import { effectiveAutoSyncEnabled } from "./settings-data";
 
 export interface DatabaseMetadata {
@@ -67,6 +67,17 @@ export interface GroupedSyncEntries {
 	group: SyncGroup | null;
 	databases: SyncedDatabase[];
 	pages: PageSyncEntry[];
+}
+
+export interface FolderScopeWarning {
+	sharedCount: number;
+	message: string;
+}
+
+export interface SyncErrorSummary {
+	failures: number;
+	warnings: number;
+	label: string;
 }
 
 export const AUTO_SYNC_OVERRIDE_LABELS: Record<AutoSyncOverride, string> = {
@@ -325,6 +336,34 @@ export function groupedSyncEntries(
 	return result;
 }
 
+export function folderScopeWarning(
+	entry: Pick<SyncedDatabase, "id" | "outputFolder">,
+	databases: Pick<SyncedDatabase, "id" | "outputFolder">[]
+): FolderScopeWarning | null {
+	const folder = normalizeFolder(entry.outputFolder);
+	if (!folder) return null;
+	const sharedCount = databases.filter((candidate) =>
+		candidate.id !== entry.id && normalizeFolder(candidate.outputFolder) === folder
+	).length;
+	if (sharedCount === 0) return null;
+	return {
+		sharedCount,
+		message: `Folder shared with ${sharedCount} other database${sharedCount === 1 ? "" : "s"}; Push scans that folder.`,
+	};
+}
+
+export function syncErrorSummary(errors: Pick<SyncError, "error">[]): SyncErrorSummary {
+	const warnings = errors.filter((error) => isProtectiveWarning(error.error)).length;
+	const failures = errors.length - warnings;
+	if (warnings > 0 && failures === 0) {
+		return { failures, warnings, label: `${warnings} skipped row${warnings === 1 ? "" : "s"}` };
+	}
+	if (warnings > 0) {
+		return { failures, warnings, label: `${failures} failed, ${warnings} skipped` };
+	}
+	return { failures, warnings, label: `${failures} row failure${failures === 1 ? "" : "s"}` };
+}
+
 /**
  * Fetches display metadata for a Notion database without throwing UI-facing errors.
  */
@@ -373,6 +412,14 @@ function directionPreviewLine(direction: SyncDirection, rowCount: string | undef
 
 function displayFolderPath(path: string): string {
 	return path.endsWith("/") ? path : `${path}/`;
+}
+
+function normalizeFolder(path: string): string {
+	return path.replace(/\\/g, "/").replace(/\/+/g, "/").replace(/^\/+|\/+$/g, "").toLowerCase();
+}
+
+function isProtectiveWarning(message: string): boolean {
+	return message.startsWith("Warning:");
 }
 
 function directionName(direction: SyncDirection): string {

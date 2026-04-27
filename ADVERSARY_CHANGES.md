@@ -2,6 +2,18 @@
 
 Fork-side changes to `stonerelay` (vs. upstream `ran-codes/obsidian-notion-database-sync`).
 
+## v0.9.3 — 2026-04-27
+
+Polishes settings group controls and makes sync-warning floods readable.
+
+**Behavior notes:**
+- Group rename now lives behind a compact header pencil action with inline save/cancel controls.
+- Group expand/collapse stays in the section header chevron instead of a separate management list.
+- Empty-group delete is a compact destructive icon and remains unavailable for populated groups.
+- Database rows wrap controls predictably and cap expanded error details so large partial states cannot turn a row into a giant slab.
+- Partial sync summaries distinguish protective stale-ID skips from real failures, so warning-only runs read as skipped rows.
+- Pushable databases sharing the same output folder now surface that folder-scope risk in the row description.
+
 ## v0.9.2 — 2026-04-27
 
 Disables unsafe database background auto-sync execution.

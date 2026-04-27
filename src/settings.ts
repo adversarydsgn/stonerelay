@@ -1,6 +1,6 @@
-import { App, ButtonComponent, Modal, Notice, PluginSettingTab, Setting, TFile, TFolder, normalizePath } from "obsidian";
+import { App, ButtonComponent, Modal, Notice, PluginSettingTab, Setting, TFile, TFolder, normalizePath, setIcon } from "obsidian";
 import NotionFreezePlugin from "./main";
-import { AutoSyncOverride, Conflict, PageSyncEntry, SyncDirection, SyncedDatabase } from "./types";
+import { AutoSyncOverride, Conflict, PageSyncEntry, SyncDirection, SyncGroup, SyncedDatabase } from "./types";
 import { createNotionClient } from "./notion-client";
 import {
 	addDatabase,
@@ -26,6 +26,7 @@ import {
 	buildConnectionPreviewRows,
 	directionChangeWarning,
 	fetchDatabaseMetadata,
+	folderScopeWarning,
 	formWarnings,
 	groupedSyncEntries,
 	lastEditSideIndicator,
@@ -33,6 +34,7 @@ import {
 	pendingConflictCount,
 	shouldAutoFillDatabaseName,
 	shouldConfirmDirectionChange,
+	syncErrorSummary,
 	syncHistoryTitle,
 	syncedDatabasesHeader,
 	slugify,
@@ -61,6 +63,8 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 	private registeredRefresh = false;
 	private expandedErrorIds = new Set<string>();
 	private syncingIds = new Set<string>();
+	private editingGroupId: string | null = null;
+	private editingGroupName = "";
 
 	constructor(app: App, plugin: NotionFreezePlugin) {
 		super(app, plugin);
@@ -203,6 +207,7 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 				text: section.group?.collapsed ? "▸" : "▾",
 			});
 			toggle.type = "button";
+			toggle.title = section.group?.collapsed ? "Expand group" : "Collapse group";
 			toggle.onClickEvent(async () => {
 				if (!section.group) return;
 				this.plugin.settings = updateGroup(this.plugin.settings, {
@@ -212,16 +217,78 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 				await this.plugin.saveSettings();
 				this.display();
 			});
-			header.createSpan({
-				cls: "stonerelay-sync-group-title",
-				text: `${title} · ${section.databases.length} databases · ${section.pages.length} pages`,
-			});
+			if (section.group && this.editingGroupId === section.group.id) {
+				const input = header.createEl("input", {
+					cls: "stonerelay-group-rename-input",
+					type: "text",
+					value: this.editingGroupName,
+				});
+				input.ariaLabel = "Group name";
+				input.addEventListener("input", () => {
+					this.editingGroupName = input.value;
+				});
+				input.addEventListener("keydown", (event) => {
+					if (event.key === "Enter") {
+						event.preventDefault();
+						void this.saveGroupRename(section.group!);
+					}
+					if (event.key === "Escape") {
+						event.preventDefault();
+						this.editingGroupId = null;
+						this.editingGroupName = "";
+						this.display();
+					}
+				});
+				input.focus();
+				const saveButton = header.createEl("button", { cls: "clickable-icon" });
+				saveButton.type = "button";
+				saveButton.title = "Save group name";
+				saveButton.ariaLabel = "Save group name";
+				setIcon(saveButton, "check");
+				saveButton.onClickEvent(() => {
+					void this.saveGroupRename(section.group!);
+				});
+				const cancelButton = header.createEl("button", { cls: "clickable-icon" });
+				cancelButton.type = "button";
+				cancelButton.title = "Cancel rename";
+				cancelButton.ariaLabel = "Cancel rename";
+				setIcon(cancelButton, "x");
+				cancelButton.onClickEvent(() => {
+					this.editingGroupId = null;
+					this.editingGroupName = "";
+					this.display();
+				});
+			} else {
+				header.createSpan({
+					cls: "stonerelay-sync-group-title",
+					text: `${title} · ${section.databases.length} databases · ${section.pages.length} pages`,
+				});
+			}
+			if (section.group) {
+				const actions = header.createDiv({ cls: "stonerelay-sync-group-actions" });
+				const renameButton = actions.createEl("button", {
+					cls: "clickable-icon",
+				});
+				renameButton.type = "button";
+				renameButton.title = "Rename group";
+				renameButton.ariaLabel = "Rename group";
+				setIcon(renameButton, "pencil");
+				renameButton.onClickEvent(() => {
+					this.editingGroupId = section.group!.id;
+					this.editingGroupName = section.group!.name;
+					this.display();
+				});
+			}
 			if (section.group && section.databases.length + section.pages.length === 0) {
+				const actions = header.querySelector(".stonerelay-sync-group-actions") ?? header;
 				const deleteButton = header.createEl("button", {
 					cls: "clickable-icon stonerelay-delete-button",
-					text: "Delete",
 				});
+				actions.appendChild(deleteButton);
 				deleteButton.type = "button";
+				deleteButton.title = "Delete empty group";
+				deleteButton.ariaLabel = "Delete empty group";
+				setIcon(deleteButton, "trash");
 				deleteButton.onClickEvent(async () => {
 					this.plugin.settings = removeGroup(this.plugin.settings, section.group!.id);
 					await this.plugin.saveSettings();
@@ -324,9 +391,21 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 		await this.plugin.saveSettings();
 	}
 
+	private async saveGroupRename(group: SyncGroup): Promise<void> {
+		const nextName = this.editingGroupName.trim();
+		this.plugin.settings = updateGroup(this.plugin.settings, {
+			...group,
+			name: nextName || group.name,
+		});
+		this.editingGroupId = null;
+		this.editingGroupName = "";
+		await this.plugin.saveSettings();
+		this.display();
+	}
+
 	private renderGroupControls(containerEl: HTMLElement): void {
 		let newGroupName = "";
-		new Setting(containerEl)
+		const createGroup = new Setting(containerEl)
 			.setName("Create group")
 			.setDesc("Groups organize databases and standalone pages in collapsible sections.")
 			.addText((text) => text
@@ -342,31 +421,7 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 					this.display();
 				}));
-		for (const group of this.plugin.settings.groups) {
-			new Setting(containerEl)
-				.setName(group.name)
-				.setDesc(group.collapsed ? "Collapsed" : "Expanded")
-				.addText((text) => text
-					.setPlaceholder("Group name")
-					.setValue(group.name)
-					.onChange(async (value) => {
-						this.plugin.settings = updateGroup(this.plugin.settings, {
-							...group,
-							name: value.trim() || group.name,
-						});
-						await this.plugin.saveSettings();
-					}))
-				.addButton((button) => button
-					.setButtonText(group.collapsed ? "Expand" : "Collapse")
-					.onClick(async () => {
-						this.plugin.settings = updateGroup(this.plugin.settings, {
-							...group,
-							collapsed: !group.collapsed,
-						});
-						await this.plugin.saveSettings();
-						this.display();
-					}));
-		}
+		createGroup.settingEl.addClass("stonerelay-create-group-setting");
 	}
 
 	private renderDatabaseRow(containerEl: HTMLElement, entry: SyncedDatabase): void {
@@ -375,8 +430,9 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 		desc.append(document.createTextNode(`${entry.databaseId}  ·  ${entry.outputFolder || "Default folder"}  ·  ${directionIcon(entry)} ${directionLabelShort(entry)}  ·  ${lastEditSideIndicator(entry, this.plugin.settings.pendingConflicts)}  ·  `));
 		desc.appendChild(this.formatLastSync(entry));
 		desc.append(document.createTextNode(`  ·  ${autoSyncReadiness(entry, this.plugin.settings.pendingConflicts)}  ·  ${autoSyncEffectiveLabel(this.plugin.settings, entry, "database")}`));
-		if (entry.lastSyncStatus === "partial" && entry.lastSyncErrors.length > 0) {
-			desc.append(document.createTextNode(`  ·  ${entry.lastSyncErrors.length} failed`));
+		const scopeWarning = folderScopeWarning(entry, this.plugin.settings.databases);
+		if (scopeWarning && canPush(entry)) {
+			desc.append(document.createTextNode(`  ·  ${scopeWarning.message}`));
 		}
 		if (entry.direction === "bidirectional" && conflictCount > 0) {
 			desc.append(document.createTextNode(`  ·  ⚠ ${conflictCount} conflicts`));
@@ -396,6 +452,7 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 						this.display();
 					})
 			);
+		setting.settingEl.addClass("stonerelay-sync-entry-setting");
 		renderDatabaseName(setting.nameEl, entry);
 		setting.addDropdown((dropdown) => {
 			dropdown.addOption("", "Ungrouped");
@@ -1115,7 +1172,7 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 			const el = document.createElement("button");
 			el.type = "button";
 			el.setText(entry.lastSyncStatus === "partial"
-				? `${entry.lastSyncErrors.length} row failures`
+				? syncErrorSummary(entry.lastSyncErrors).label
 				: `Error: ${truncate(entry.lastSyncError || "Sync failed")}`);
 			el.addClass("stonerelay-sync-error");
 			el.addClass("stonerelay-sync-error-toggle");

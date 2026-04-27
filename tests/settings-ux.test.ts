@@ -4,12 +4,14 @@ import {
 	autoSyncReadiness,
 	databaseDirectionCounts,
 	fetchDatabaseMetadata,
+	folderScopeWarning,
 	groupedSyncEntries,
 	lastEditSideIndicator,
 	parseNotionDbId,
 	parseNotionPageId,
 	pendingConflictCount,
 	slugify,
+	syncErrorSummary,
 	syncHistoryTitle,
 	syncedDatabasesHeader,
 	trimApiKey,
@@ -63,6 +65,56 @@ describe("grouped sync entries", () => {
 			{ group: null, databases: [{ id: "db-2" }], pages: [{ id: "page-1" }] },
 			{ group: { id: "group-1", collapsed: true }, databases: [{ id: "db-1" }], pages: [{ id: "page-2" }] },
 		]);
+	});
+});
+
+describe("folder scope warnings", () => {
+	it("warns when another database shares the same push folder", () => {
+		const databases = [
+			{ id: "bugs", outputFolder: "3. System/" },
+			{ id: "people", outputFolder: "3. System" },
+			{ id: "projects", outputFolder: "1. Projects" },
+		] as never;
+
+		expect(folderScopeWarning(databases[0], databases)).toEqual({
+			sharedCount: 1,
+			message: "Folder shared with 1 other database; Push scans that folder.",
+		});
+	});
+
+	it("does not warn for unique or blank folders", () => {
+		const databases = [
+			{ id: "bugs", outputFolder: "_relay/bugs" },
+			{ id: "people", outputFolder: "_relay/people" },
+			{ id: "blank", outputFolder: "" },
+		] as never;
+
+		expect(folderScopeWarning(databases[0], databases)).toBeNull();
+		expect(folderScopeWarning(databases[2], databases)).toBeNull();
+	});
+});
+
+describe("sync error summaries", () => {
+	it("labels warning-only stale-ID skips as skipped rows", () => {
+		expect(syncErrorSummary([
+			{ error: "Warning: 3. System/Leads DB/Ada.md: notion-id abc was not found in target database; skipped to avoid creating a duplicate." },
+			{ error: "Warning: 3. System/People DB/Grace.md: notion-id def was not found in target database; skipped to avoid creating a duplicate." },
+		])).toEqual({
+			failures: 0,
+			warnings: 2,
+			label: "2 skipped rows",
+		});
+	});
+
+	it("keeps real failures visible when warnings are mixed in", () => {
+		expect(syncErrorSummary([
+			{ error: "Warning: skipped stale notion-id" },
+			{ error: "3. System/Bugs DB/Bug.md: Notion rejected row" },
+		])).toEqual({
+			failures: 1,
+			warnings: 1,
+			label: "1 failed, 1 skipped",
+		});
 	});
 });
 
