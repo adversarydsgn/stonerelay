@@ -192,7 +192,7 @@ describe("pushDatabase integration", () => {
 		expect(result.errors[0]).toContain("Notion rejected row");
 	});
 
-	it("skips stale notion-id rows instead of creating duplicates", async () => {
+	it("skips stale notion-id rows instead of creating duplicates after operator confirmation", async () => {
 		const folder = Object.assign(Object.create(TFolder.prototype), { path: "_relay/bugs" });
 		const files = [
 			file("_relay/bugs/stale.md", "---\nnotion-id: missing-page\nStatus: Done\n---\n# Stale"),
@@ -226,12 +226,99 @@ describe("pushDatabase integration", () => {
 			},
 		};
 
-		const result = await pushDatabase(app as never, client as never, "db-1", "_relay/bugs");
+		const result = await pushDatabase(app as never, client as never, "db-1", "_relay/bugs", {
+			allowStaleNotionIdThresholdProceed: true,
+		});
 
 		expect(client.pages.update).not.toHaveBeenCalled();
 		expect(client.pages.create).not.toHaveBeenCalled();
 		expect(result.skipped).toBe(1);
 		expect(result.errors[0]).toContain("notion-id missing-page was not found");
+	});
+
+	it("requires stale notion-id threshold confirmation before Notion mutation", async () => {
+		const folder = Object.assign(Object.create(TFolder.prototype), { path: "_relay/bugs" });
+		const files = Array.from({ length: 10 }, (_, index) =>
+			file(
+				`_relay/bugs/${index}.md`,
+				index < 5
+					? `---\nnotion-id: missing-page-${index}\nStatus: Done\n---\n# Stale ${index}`
+					: `---\nStatus: Done\n---\n# New ${index}`
+			)
+		);
+		const app = {
+			vault: {
+				getAbstractFileByPath: vi.fn().mockReturnValue(folder),
+				getMarkdownFiles: vi.fn().mockReturnValue(files.map((entry) => entry.file)),
+				cachedRead: vi.fn(async (tfile: TFile) => files.find((entry) => entry.file === tfile)?.content ?? ""),
+			},
+		};
+		const client = {
+			databases: {
+				retrieve: vi.fn().mockResolvedValue({
+					title: [richText("Bugs")],
+					data_sources: [{ id: "source-1" }],
+				}),
+			},
+			dataSources: {
+				retrieve: vi.fn().mockResolvedValue({
+					properties: {
+						Name: { type: "title" },
+						Status: { type: "status" },
+					},
+				}),
+				query: vi.fn().mockResolvedValue({ has_more: false, results: [] }),
+			},
+			pages: {
+				update: vi.fn(),
+				create: vi.fn(),
+			},
+		};
+
+		await expect(pushDatabase(app as never, client as never, "db-1", "_relay/bugs"))
+			.rejects.toThrow("stale notion-id confirmation required");
+		expect(client.pages.update).not.toHaveBeenCalled();
+		expect(client.pages.create).not.toHaveBeenCalled();
+	});
+
+	it("blocks files with mismatched notion-database-id before Notion writes", async () => {
+		const folder = Object.assign(Object.create(TFolder.prototype), { path: "_relay/bugs" });
+		const files = [
+			file("_relay/bugs/wrong.md", "---\nnotion-database-id: 11111111111141118111111111111111\nStatus: Done\n---\n# Wrong DB"),
+		];
+		const app = {
+			vault: {
+				getAbstractFileByPath: vi.fn().mockReturnValue(folder),
+				getMarkdownFiles: vi.fn().mockReturnValue(files.map((entry) => entry.file)),
+				cachedRead: vi.fn(async (tfile: TFile) => files.find((entry) => entry.file === tfile)?.content ?? ""),
+			},
+		};
+		const client = {
+			databases: {
+				retrieve: vi.fn().mockResolvedValue({
+					title: [richText("Bugs")],
+					data_sources: [{ id: "source-1" }],
+				}),
+			},
+			dataSources: {
+				retrieve: vi.fn().mockResolvedValue({
+					properties: {
+						Name: { type: "title" },
+						Status: { type: "status" },
+					},
+				}),
+				query: vi.fn().mockResolvedValue({ has_more: false, results: [] }),
+			},
+			pages: {
+				update: vi.fn(),
+				create: vi.fn(),
+			},
+		};
+
+		await expect(pushDatabase(app as never, client as never, "21b39452dc7b4a159d6b7b229c21cc80", "_relay/bugs"))
+			.rejects.toThrow("Push blocked before Notion write");
+		expect(client.pages.update).not.toHaveBeenCalled();
+		expect(client.pages.create).not.toHaveBeenCalled();
 	});
 });
 

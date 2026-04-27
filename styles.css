@@ -339,3 +339,26 @@
 	padding: 10px 12px;
 	white-space: pre-wrap;
 }
+
+.stonerelay-diagnostics-panel,
+.stonerelay-brat-status-panel {
+	border-top: 1px solid var(--background-modifier-border);
+	margin-top: 16px;
+	padding-top: 12px;
+}
+
+.stonerelay-diagnostics-row {
+	border-bottom: 1px solid var(--background-modifier-border);
+	padding: 8px 0;
+}
+
+.stonerelay-diagnostics-row h4 {
+	font-size: var(--font-ui-medium);
+	margin: 0 0 6px;
+}
+
+.stonerelay-diagnostics-row p,
+.stonerelay-brat-status-panel p {
+	margin: 4px 0;
+	overflow-wrap: anywhere;
+}

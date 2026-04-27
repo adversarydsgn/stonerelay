@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	AUTO_SYNC_OVERRIDE_LABELS,
 	autoSyncReadiness,
+	databasePathCopy,
+	databaseReadinessCopy,
 	databaseDirectionCounts,
 	fetchDatabaseMetadata,
 	folderScopeWarning,
@@ -128,6 +130,16 @@ describe("folder scope warnings", () => {
 		]);
 
 		expect(folderScopeWarning(data, data.databases[0])).toBeNull();
+	});
+
+	it("uses the resolved content folder in row path copy and readiness", () => {
+		const data = settings([
+			{ id: "bugs", name: "Bugs DB", outputFolder: "3. System/" },
+			{ id: "sessions", name: "Sessions DB", outputFolder: "3. System/" },
+		]);
+
+		expect(databasePathCopy(data, data.databases[0])).toBe("Parent: 3. System/ · Content/source: 3. System/Bugs DB/ · Push scans: 3. System/Bugs DB/");
+		expect(databaseReadinessCopy(data, data.databases[0])).toBe("Ready: Push scans 3. System/Bugs DB");
 	});
 
 	it("does not warn for unique folders", () => {

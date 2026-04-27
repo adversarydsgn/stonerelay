@@ -1,16 +1,18 @@
-import { addIcon, App, Modal, Notice, Plugin, Setting, SuggestModal, normalizePath, TFile } from "obsidian";
+import { addIcon, App, Modal, Notice, Plugin, Setting, SuggestModal, normalizePath, TFile, TFolder } from "obsidian";
 import { Conflict, NotionFreezeSettings, DatabaseSyncResult, PageSyncEntry, SyncError, SyncRunOptions, SyncRunType, SyncedDatabase } from "./types";
 import { NotionFreezeSettingTab } from "./settings";
 import { FreezeModal, FrozenDatabase } from "./freeze-modal";
 import { createNotionClient, normalizeNotionId } from "./notion-client";
 import { freshDatabaseImport, refreshDatabase } from "./database-freezer";
-import { migrateData, resolveDatabaseContentFolder, resolveErrorLogFolder, resolveOutputFolder, syncAll, updateDatabase, updatePage } from "./settings-data";
-import { pushDatabase } from "./push";
+import { migrateData, resolveErrorLogFolder, syncAll, updateDatabase, updatePage } from "./settings-data";
+import { inspectStaleNotionIdSkips, pushDatabase } from "./push";
 import { applyPhaseTransition, syncErrorsFromMessages, SyncCancelled } from "./sync-state";
 import { PluginDataAdapter, writePluginDataAtomic } from "./plugin-data";
 import { AutoSyncJob, AutoSyncQueue, createBackgroundConflict, findAutoSyncEntryForPath, isAutoSyncEligible } from "./auto-sync";
 import { importStandalonePage, refreshStandalonePage } from "./page-sync";
 import { parseNotionPageId } from "./settings-ux";
+import { isSafeVaultRelativePath, resolveDatabasePathModel } from "./path-model";
+import { confirmStaleNotionIdSafety, evaluatePullSafety, evaluatePushSafety, retryDirectionForErrors, StaleNotionIdSafetyState } from "./sync-safety";
 
 export default class NotionFreezePlugin extends Plugin {
 	settings: NotionFreezeSettings = migrateData(null);
@@ -153,9 +155,14 @@ export default class NotionFreezePlugin extends Plugin {
 	async pushAllEnabledDatabases(): Promise<void> {
 		const result = await syncAll(
 			this.settings,
-			async (entry, outputFolder) => {
-				this.assertSafePushFolder(entry);
-				return this.pushConfiguredDatabase(entry, this.resolvePushSourceFolder(entry));
+			async (entry) => {
+				this.assertSafePushFolder(entry, { allowDisabledEntry: false });
+				const sourceFolder = this.resolvePushSourceFolder(entry);
+				const confirmed = await this.confirmStaleIdThresholdIfNeeded(entry, sourceFolder);
+				if (!confirmed) throw new Error("Push cancelled: stale notion-id threshold requires operator confirmation.");
+				return this.pushConfiguredDatabase(entry, sourceFolder, {
+					allowStaleNotionIdThresholdProceed: true,
+				});
 			},
 			(message) => new Notice(message),
 			"push"
@@ -190,10 +197,21 @@ export default class NotionFreezePlugin extends Plugin {
 			new Notice(`Sync already running for ${entry.name}.`);
 			return;
 		}
+		const unsafe = this.pullSafetyBlocker(entry, { retryRowIds });
+		if (unsafe) {
+			new Notice(unsafe);
+			return;
+		}
 		const run = await this.beginSync(entry, type, retryRowIds);
 		try {
 			new Notice(`Syncing ${entry.name}...`);
-			const result = await this.syncConfiguredDatabase(entry, resolveOutputFolder(this.settings, entry), run.options);
+			const result = await this.syncConfiguredDatabase(
+				entry,
+				resolveDatabasePathModel(this.settings, entry, {
+					discoveredContentFolder: this.findFrozenDatabase(normalizeNotionId(entry.databaseId))?.folderPath ?? null,
+				}).configuredParentFolder,
+				run.options
+			);
 			const now = new Date().toISOString();
 			const errors = run.errors.length > 0
 				? run.errors
@@ -249,20 +267,35 @@ export default class NotionFreezePlugin extends Plugin {
 		}
 	}
 
-	async pushOneConfiguredDatabase(entry: SyncedDatabase, type: SyncRunType = "full", retryRowIds?: string[]): Promise<void> {
+	async pushOneConfiguredDatabase(entry: SyncedDatabase, type: SyncRunType = "full", retryRowIds?: string[], safetyOptions: {
+		allowPendingConflicts?: boolean;
+	} = {}): Promise<void> {
 		if (this.isSyncActive(entry.id)) {
 			new Notice(`Sync already running for ${entry.name}.`);
 			return;
 		}
-		const unsafeFolder = this.pushFolderBlocker(entry);
-		if (unsafeFolder) {
-			new Notice(unsafeFolder);
+		const unsafe = this.pushSafetyBlocker(entry, {
+			retryRowIds,
+			allowDisabledEntry: true,
+			allowPendingConflicts: safetyOptions.allowPendingConflicts ?? false,
+		});
+		if (unsafe) {
+			new Notice(unsafe);
+			return;
+		}
+		const sourceFolder = this.resolvePushSourceFolder(entry);
+		const confirmed = await this.confirmStaleIdThresholdIfNeeded(entry, sourceFolder);
+		if (!confirmed) {
+			new Notice(`Push cancelled: ${entry.name} has stale notion-id threshold risk.`);
 			return;
 		}
 		const run = await this.beginSync(entry, type, retryRowIds);
 		try {
 			new Notice(`Pushing ${entry.name}...`);
-			const result = await this.pushConfiguredDatabase(entry, this.resolvePushSourceFolder(entry), run.options);
+			const result = await this.pushConfiguredDatabase(entry, sourceFolder, {
+				...run.options,
+				allowStaleNotionIdThresholdProceed: true,
+			});
 			const now = new Date().toISOString();
 			const errors = run.errors.length > 0
 				? run.errors
@@ -321,33 +354,78 @@ export default class NotionFreezePlugin extends Plugin {
 	async retryFailedRows(entry: SyncedDatabase): Promise<void> {
 		if (entry.lastSyncErrors.length === 0) return;
 		const retryIds = entry.lastSyncErrors.map((error) => error.rowId);
-		if (entry.direction === "push") {
+		const retryDirection = retryDirectionForErrors(entry.lastSyncErrors);
+		if (retryDirection === "mixed") {
+			new Notice(`Retry blocked for ${entry.name}: failed rows include both pull row IDs and push vault paths.`);
+			return;
+		}
+		if (retryDirection === "push") {
 			await this.pushOneConfiguredDatabase(entry, "retry", retryIds);
 			return;
 		}
 		await this.syncOneConfiguredDatabase(entry, "retry", retryIds);
 	}
 
-	private assertSafePushFolder(entry: SyncedDatabase): void {
-		const message = this.pushFolderBlocker(entry);
+	private async confirmStaleIdThresholdIfNeeded(entry: SyncedDatabase, sourceFolder: string): Promise<boolean> {
+		if (!this.settings.apiKey) return true;
+		const client = createNotionClient(this.settings.apiKey);
+		const state = await inspectStaleNotionIdSkips(
+			this.app,
+			client,
+			normalizeNotionId(entry.databaseId),
+			sourceFolder
+		);
+		if (state.kind !== "requires-stale-id-confirmation") return true;
+		return confirmStaleNotionIdSafety(state, (message) => new Promise((resolve) => {
+			new StaleNotionIdConfirmationModal(this.app, state, message, resolve).open();
+		}));
+	}
+
+	private assertSafePushFolder(entry: SyncedDatabase, options: {
+		retryRowIds?: string[];
+		allowDisabledEntry?: boolean;
+		allowPendingConflicts?: boolean;
+	} = {}): void {
+		const message = this.pushSafetyBlocker(entry, options);
 		if (message) throw new Error(message);
 	}
 
-	private pushFolderBlocker(entry: SyncedDatabase): string | null {
-		const sourceFolder = this.resolvePushSourceFolder(entry);
-		const shared = this.settings.databases.filter((candidate) =>
-			candidate.id !== entry.id &&
-			normalizeFolder(this.resolvePushSourceFolder(candidate)) === normalizeFolder(sourceFolder)
-		);
-		if (shared.length === 0) return null;
-		const names = shared.map((db) => db.name).slice(0, 3).join(", ");
-		const suffix = shared.length > 3 ? `, +${shared.length - 3} more` : "";
-		return `Push blocked for ${entry.name}: source folder "${sourceFolder}" is shared with ${names}${suffix}. Use a database-specific folder first.`;
+	private pushSafetyBlocker(entry: SyncedDatabase, options: {
+		retryRowIds?: string[];
+		allowDisabledEntry?: boolean;
+		allowPendingConflicts?: boolean;
+	} = {}): string | null {
+		const discoveredContentFolder = this.findFrozenDatabase(normalizeNotionId(entry.databaseId))?.folderPath ?? null;
+		const pathModel = resolveDatabasePathModel(this.settings, entry, { discoveredContentFolder });
+		const source = this.app.vault.getAbstractFileByPath(pathModel.pushSourceFolder);
+		const decision = evaluatePushSafety({
+			settings: this.settings,
+			entry,
+			discoveredContentFolder,
+			folderExists: source instanceof TFolder,
+			retryRowIds: options.retryRowIds,
+			allowDisabledEntry: options.allowDisabledEntry,
+			allowPendingConflicts: options.allowPendingConflicts,
+		});
+		return decision.hardBlocks[0]?.message ?? null;
+	}
+
+	private pullSafetyBlocker(entry: SyncedDatabase, options: { retryRowIds?: string[] } = {}): string | null {
+		const discoveredContentFolder = this.findFrozenDatabase(normalizeNotionId(entry.databaseId))?.folderPath ?? null;
+		const decision = evaluatePullSafety({
+			settings: this.settings,
+			entry,
+			discoveredContentFolder,
+			retryRowIds: options.retryRowIds,
+		});
+		return decision.hardBlocks[0]?.message ?? null;
 	}
 
 	private resolvePushSourceFolder(entry: SyncedDatabase): string {
 		const existing = this.findFrozenDatabase(normalizeNotionId(entry.databaseId));
-		return existing?.folderPath ?? resolveDatabaseContentFolder(this.settings, entry);
+		return resolveDatabasePathModel(this.settings, entry, {
+			discoveredContentFolder: existing?.folderPath ?? null,
+		}).pushSourceFolder;
 	}
 
 	async importStandalonePageInput(input: string, outputFolder?: string): Promise<PageSyncEntry | null> {
@@ -451,7 +529,7 @@ export default class NotionFreezePlugin extends Plugin {
 		const vaultPath = typeof conflict.vaultSnapshot.path === "string"
 			? conflict.vaultSnapshot.path
 			: conflict.rowId;
-		await this.pushOneConfiguredDatabase(entry, "retry", [vaultPath]);
+		await this.pushOneConfiguredDatabase(entry, "retry", [vaultPath], { allowPendingConflicts: true });
 	}
 
 	async syncConfiguredDatabase(
@@ -761,7 +839,7 @@ export default class NotionFreezePlugin extends Plugin {
 		lastCommittedRowId: string | null
 	): Promise<void> {
 		const folder = resolveErrorLogFolder(this.settings, entry);
-		if (!folder || !isSafeRelativePath(folder)) return;
+		if (!folder || !isSafeVaultRelativePath(folder)) return;
 		const body = [
 			"# Stonerelay sync error",
 			"",
@@ -790,7 +868,7 @@ export default class NotionFreezePlugin extends Plugin {
 		filePath?: string
 	): Promise<void> {
 		const folder = resolveErrorLogFolder(this.settings, entry);
-		if (!folder || !isSafeRelativePath(folder)) return;
+		if (!folder || !isSafeVaultRelativePath(folder)) return;
 		const body = [
 			"# Stonerelay page sync error",
 			"",
@@ -808,7 +886,7 @@ export default class NotionFreezePlugin extends Plugin {
 
 	private async writeConflictLog(entry: SyncedDatabase, conflict: Conflict): Promise<void> {
 		const folder = resolveErrorLogFolder(this.settings, entry);
-		if (!folder || !isSafeRelativePath(folder)) return;
+		if (!folder || !isSafeVaultRelativePath(folder)) return;
 		const body = [
 			"# Stonerelay conflict",
 			"",
@@ -964,6 +1042,46 @@ class DatabasePickerModal extends SuggestModal<SyncedDatabase> {
 	}
 }
 
+class StaleNotionIdConfirmationModal extends Modal {
+	constructor(
+		app: App,
+		private readonly state: Extract<StaleNotionIdSafetyState, { kind: "requires-stale-id-confirmation" }>,
+		private readonly message: string,
+		private readonly onDecision: (confirmed: boolean) => void
+	) {
+		super(app);
+	}
+
+	onOpen(): void {
+		const { contentEl } = this;
+		contentEl.empty();
+		contentEl.createEl("h2", { text: "Confirm stale notion-id skips" });
+		contentEl.createEl("p", { text: this.message });
+		contentEl.createEl("p", {
+			cls: "setting-item-description",
+			text: `Threshold: more than ${this.state.threshold.count} stale skips or more than ${Math.round(this.state.threshold.ratio * 100)}% of candidate files.`,
+		});
+		new Setting(contentEl)
+			.addButton((button) => button
+				.setButtonText("Cancel")
+				.onClick(() => {
+					this.close();
+					this.onDecision(false);
+				}))
+			.addButton((button) => button
+				.setButtonText("I see the stale IDs, proceed anyway")
+				.setWarning()
+				.onClick(() => {
+					this.close();
+					this.onDecision(true);
+				}));
+	}
+
+	onClose(): void {
+		this.contentEl.empty();
+	}
+}
+
 class PageImportModal extends Modal {
 	private input = "";
 	private outputFolder = "";
@@ -1070,13 +1188,4 @@ function timestampedFilePrefix(iso: string): string {
 
 function safeFileToken(value: string): string {
 	return value.replace(/[^a-z0-9_-]+/gi, "-").slice(0, 80) || "row";
-}
-
-function normalizeFolder(path: string): string {
-	return path.replace(/\\/g, "/").replace(/\/+/g, "/").replace(/^\/+|\/+$/g, "").toLowerCase();
-}
-
-function isSafeRelativePath(path: string): boolean {
-	if (!path || path.startsWith("/") || path.includes("\\")) return false;
-	return normalizePath(path).split("/").every((part) => part !== "..");
 }

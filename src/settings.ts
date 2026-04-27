@@ -2,6 +2,8 @@ import { App, ButtonComponent, Modal, Notice, PluginSettingTab, Setting, TFile, 
 import NotionFreezePlugin from "./main";
 import { AutoSyncOverride, Conflict, PageSyncEntry, SyncDirection, SyncGroup, SyncedDatabase } from "./types";
 import { createNotionClient } from "./notion-client";
+import { buildBratStatus, BratStatusState, fetchLatestGithubRelease, getInstalledPluginVersion, renderBratStatusPanel, unavailableBratStatus } from "./brat-status";
+import { renderDiagnosticsPanel } from "./diagnostics-panel";
 import {
 	addDatabase,
 	addGroup,
@@ -13,9 +15,8 @@ import {
 	updatePage,
 } from "./settings-data";
 import {
-	DatabaseMetadata,
-	DIRECTION_HELPER,
-	DIRECTION_LABELS,
+		DatabaseMetadata,
+		DIRECTION_LABELS,
 	DIRECTION_OPTION_ORDER,
 	DIRECTION_SECTION_HELPER,
 	PREVIEW_PLACEHOLDER,
@@ -23,8 +24,10 @@ import {
 	AUTO_SYNC_OVERRIDE_LABELS,
 	autoSyncEffectiveLabel,
 	autoSyncReadiness,
-	buildConnectionPreviewRows,
-	directionChangeWarning,
+		buildConnectionPreviewRows,
+		databasePathCopy,
+		databaseReadinessCopy,
+		directionChangeWarning,
 	fetchDatabaseMetadata,
 	folderScopeWarning,
 	formWarnings,
@@ -42,6 +45,7 @@ import {
 	vaultFolderHelper,
 } from "./settings-ux";
 import { resolveManualMergeConflict } from "./conflict-resolution";
+import { isSafeVaultRelativePath, pathStartsWith, resolveDatabasePathModel } from "./path-model";
 
 interface EditState {
 	input: string;
@@ -65,6 +69,7 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 	private syncingIds = new Set<string>();
 	private editingGroupId: string | null = null;
 	private editingGroupName = "";
+	private bratStatus: BratStatusState = { kind: "idle" };
 
 	constructor(app: App, plugin: NotionFreezePlugin) {
 		super(app, plugin);
@@ -321,6 +326,21 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 			containerEl.createEl("hr", { cls: "stonerelay-edit-divider" });
 		}
 
+		renderDiagnosticsPanel(containerEl, this.plugin.settings, {
+			staleIdCandidateCount: (_entry, folder) => this.countStaleIdCandidates(folder),
+		});
+		renderBratStatusPanel(
+			containerEl,
+			getInstalledPluginVersion(this.app, this.plugin.manifest.version),
+			this.bratStatus,
+			() => {
+				void this.refreshBratStatus(true);
+			}
+		);
+		if (this.bratStatus.kind === "idle") {
+			void this.refreshBratStatus(false);
+		}
+
 		new Setting(containerEl)
 			.addButton((btn) =>
 				btn
@@ -385,6 +405,26 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 			});
 	}
 
+	private async refreshBratStatus(force: boolean): Promise<void> {
+		this.bratStatus = { kind: "loading" };
+		this.display();
+		try {
+			const release = await fetchLatestGithubRelease({ force });
+			this.bratStatus = buildBratStatus(getInstalledPluginVersion(this.app, this.plugin.manifest.version), release);
+		} catch {
+			this.bratStatus = unavailableBratStatus();
+		}
+		this.display();
+	}
+
+	private countStaleIdCandidates(folder: string): number {
+		return this.app.vault.getMarkdownFiles().filter((file) => {
+			if (!pathStartsWith(file.path, folder)) return false;
+			const notionId = this.app.metadataCache.getFileCache(file)?.frontmatter?.["notion-id"];
+			return typeof notionId === "string" && notionId.trim().length > 0;
+		}).length;
+	}
+
 	private async saveApiKey(value: string): Promise<void> {
 		if (this.plugin.settings.apiKey === value) return;
 		this.plugin.settings.apiKey = value;
@@ -425,11 +465,11 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 	}
 
 	private renderDatabaseRow(containerEl: HTMLElement, entry: SyncedDatabase): void {
-		const desc = document.createDocumentFragment();
-		const conflictCount = pendingConflictCount(entry, this.plugin.settings.pendingConflicts);
-		desc.append(document.createTextNode(`${entry.databaseId}  ·  ${entry.outputFolder || "Default folder"}  ·  ${directionIcon(entry)} ${directionLabelShort(entry)}  ·  ${lastEditSideIndicator(entry, this.plugin.settings.pendingConflicts)}  ·  `));
-		desc.appendChild(this.formatLastSync(entry));
-		desc.append(document.createTextNode(`  ·  ${autoSyncReadiness(entry, this.plugin.settings.pendingConflicts)}  ·  ${autoSyncEffectiveLabel(this.plugin.settings, entry, "database")}`));
+			const desc = document.createDocumentFragment();
+			const conflictCount = pendingConflictCount(entry, this.plugin.settings.pendingConflicts);
+			desc.append(document.createTextNode(`${entry.databaseId}  ·  ${databasePathCopy(this.plugin.settings, entry)}  ·  ${directionIcon(entry)} ${directionLabelShort(entry)}  ·  ${lastEditSideIndicator(entry, this.plugin.settings.pendingConflicts)}  ·  `));
+			desc.appendChild(this.formatLastSync(entry));
+			desc.append(document.createTextNode(`  ·  ${autoSyncReadiness(entry, this.plugin.settings.pendingConflicts)}  ·  ${autoSyncEffectiveLabel(this.plugin.settings, entry, "database")}  ·  ${databaseReadinessCopy(this.plugin.settings, entry)}`));
 		const scopeWarning = folderScopeWarning(this.plugin.settings, entry);
 		if (scopeWarning && canPush(entry)) {
 			desc.append(document.createTextNode(`  ·  ${scopeWarning.message}`));
@@ -694,15 +734,15 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 				this.display();
 				return;
 			}
-			if (!isValidRelativePath(finalOutput)) {
-				state.validationError = "Output folder must be a relative vault path without ../ traversal.";
-				this.display();
-				return;
-			}
-			if (draft.errorLogFolder.trim() && !isValidRelativePath(draft.errorLogFolder.trim())) {
-				state.validationError = "Error log folder must be a relative vault path without ../ traversal.";
-				this.display();
-				return;
+				if (!isSafeVaultRelativePath(finalOutput)) {
+					state.validationError = "Output folder must be a relative vault path without ../ traversal.";
+					this.display();
+					return;
+				}
+				if (draft.errorLogFolder.trim() && !isSafeVaultRelativePath(draft.errorLogFolder.trim())) {
+					state.validationError = "Error log folder must be a relative vault path without ../ traversal.";
+					this.display();
+					return;
 			}
 			if (this.editingId === "__new__" && draft.direction === "bidirectional") {
 				state.validationError = "Bidirectional is only available after first sync completes. Pick Pull or Push to seed the database, then flip to Bidirectional in Edit.";
@@ -819,9 +859,9 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 					})
 			);
 
-		const outputSetting = new Setting(wrapper)
-			.setName("Vault folder")
-			.setDesc(vaultFolderHelper(draft.direction ?? "pull"));
+			const outputSetting = new Setting(wrapper)
+				.setName("Organize under parent folder")
+				.setDesc(vaultFolderHelper(draft.direction ?? "pull"));
 		outputDescEl = outputSetting.descEl;
 		outputSetting.addText((text) =>
 			text
@@ -949,9 +989,9 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 				);
 		}
 
-		new Setting(wrapper)
-			.setName("Nest files under database subfolder")
-			.setDesc(resolvedPathPreview(draft))
+			new Setting(wrapper)
+				.setName("Nest files under database subfolder")
+				.setDesc(resolvedPathPreview(this.plugin.settings, draft))
 			.addToggle((toggle) =>
 				toggle
 					.setValue(draft.nest_under_db_name)
@@ -1063,9 +1103,9 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 			testButton?.setDisabled(parseNotionDbId(state.input) === null);
 		}
 
-		const currentVaultStats = (): VaultFolderStats => {
-			return this.getVaultFolderStats(draft.outputFolder.trim() || "_relay/");
-		};
+			const currentVaultStats = (): VaultFolderStats => {
+				return this.getVaultFolderStats(resolveDatabasePathModel(this.plugin.settings, draft).databaseContentFolder);
+			};
 
 		function updateFormUx(): void {
 			const direction = draft.direction ?? "pull";
@@ -1436,11 +1476,6 @@ function metadataMessage(metadata: DatabaseMetadata, tested: boolean): string {
 	return details.length > 0 ? `${prefix} · ${details.join(" · ")}` : prefix;
 }
 
-function isValidRelativePath(path: string): boolean {
-	if (!path || path.startsWith("/") || path.includes("\\")) return false;
-	return path.split("/").every((part) => part !== "..");
-}
-
 function relativeTime(iso: string): string {
 	const then = new Date(iso).getTime();
 	if (Number.isNaN(then)) return iso;
@@ -1503,12 +1538,9 @@ function phaseOneBidirectionalHelper(): string {
 	return "Bidirectional is only available after first sync completes. Pick Pull or Push to seed the database, then flip to Bidirectional in Edit.";
 }
 
-function resolvedPathPreview(entry: SyncedDatabase): string {
-	const folder = entry.outputFolder.trim() || "_relay";
-	const name = entry.name.trim() || "<DB-name>";
-	return entry.nest_under_db_name
-		? `Files will land in: ${folder}/${name}/<file>.md`
-		: `Files will land in: ${folder}/<file>.md`;
+function resolvedPathPreview(settings: Parameters<typeof resolveDatabasePathModel>[0], entry: SyncedDatabase): string {
+	const model = resolveDatabasePathModel(settings, entry);
+	return `Database content/source folder: ${model.databaseContentFolder}/<file>.md`;
 }
 
 function renderDatabaseName(nameEl: HTMLElement, entry: SyncedDatabase): void {

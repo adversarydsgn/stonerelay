@@ -340,13 +340,13 @@ describe("output folder resolution", () => {
 			outputFolder: "3. System/",
 			nest_under_db_name: true,
 		}))).toBe("3. System/Bugs DB");
-		expect(resolveDatabaseContentFolder(settings(), database({
-			name: "Bugs DB",
-			outputFolder: "3. System/",
-			nest_under_db_name: false,
-		}))).toBe("3. System/");
+			expect(resolveDatabaseContentFolder(settings(), database({
+				name: "Bugs DB",
+				outputFolder: "3. System/",
+				nest_under_db_name: false,
+			}))).toBe("3. System");
+		});
 	});
-});
 
 describe("error log folder resolution", () => {
 	it("prefers per-db override, then global default, then UI-only null", () => {

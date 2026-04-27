@@ -8,6 +8,7 @@ import { DatabaseSyncResult, SyncRunOptions } from "./types";
 import { convertRichText } from "./block-converter";
 import { notionRequest } from "./notion-client";
 import { assertNotCancelled, classifyError, commitRow } from "./sync-state";
+import { evaluateStaleNotionIdSafety, StaleNotionIdSafetyState, validatePushCandidateFiles } from "./sync-safety";
 
 const CHUNK_LIMIT = 1900;
 const INTERNAL_FRONTMATTER_KEYS = new Set([
@@ -41,6 +42,16 @@ interface ExistingPage {
 	title: string;
 }
 
+export class StaleNotionIdConfirmationRequired extends Error {
+	readonly state: Extract<StaleNotionIdSafetyState, { kind: "requires-stale-id-confirmation" }>;
+
+	constructor(state: Extract<StaleNotionIdSafetyState, { kind: "requires-stale-id-confirmation" }>) {
+		super(`Stonerelay stale notion-id confirmation required: ${state.skipCount} stale files (${formatRatio(state.skipRatio)}).`);
+		this.name = "StaleNotionIdConfirmationRequired";
+		this.state = state;
+	}
+}
+
 interface NotionDateValue {
 	start?: unknown;
 	end?: unknown;
@@ -68,8 +79,20 @@ export async function pushDatabase(
 
 	const docs = await readMarkdownDocuments(app, sourceFolder, titlePropName);
 	const existingPages = await queryAllPages(client, dataSourceId, titlePropName);
+	const ownershipIssues = validatePushCandidateFiles(databaseId, docs.map((doc) => ({
+		path: doc.file.path,
+		notionDatabaseId: doc.props["notion-database-id"],
+		notionId: doc.props["notion-id"],
+	})));
+	if (ownershipIssues.length > 0) {
+		throw new Error(`Push blocked before Notion write: ${ownershipIssues[0].message}`);
+	}
 	const byTitle = new Map(existingPages.map((page) => [page.title, page.id]));
 	const byId = new Map(existingPages.flatMap((page) => notionIdKeys(page.id).map((key) => [key, page.id])));
+	const staleState = evaluateStaleNotionIdSafety(staleNotionIdCandidates(docs, byId), docs.length);
+	if (staleState.kind === "requires-stale-id-confirmation" && !options.allowStaleNotionIdThresholdProceed) {
+		throw new StaleNotionIdConfirmationRequired(staleState);
+	}
 	const ctx: PushContext = {
 		titleToPageId: byTitle,
 		titleToNotionId: new Map(),
@@ -162,6 +185,27 @@ export async function pushDatabase(
 		failed,
 		errors,
 	};
+}
+
+export async function inspectStaleNotionIdSkips(
+	app: App,
+	client: Client,
+	databaseId: string,
+	sourceFolder: string
+): Promise<StaleNotionIdSafetyState> {
+	const database = (await notionRequest(() =>
+		client.databases.retrieve({ database_id: databaseId })
+	)) as DatabaseObjectResponse;
+	const dataSourceId = database.data_sources?.[0]?.id ?? databaseId;
+	const schema = await getWritableSchema(client, database, dataSourceId);
+	const titlePropName = findTitleProperty(schema);
+	if (!titlePropName) {
+		throw new Error("No title property found for stale notion-id preflight.");
+	}
+	const docs = await readMarkdownDocuments(app, sourceFolder, titlePropName);
+	const existingPages = await queryAllPages(client, dataSourceId, titlePropName);
+	const byId = new Map(existingPages.flatMap((page) => notionIdKeys(page.id).map((key) => [key, page.id])));
+	return evaluateStaleNotionIdSafety(staleNotionIdCandidates(docs, byId), docs.length);
 }
 
 export function buildPageProperties(
@@ -403,6 +447,17 @@ function isPushableFile(file: TFile, sourceFolder: string): boolean {
 	return file.path === sourceFolder || file.path.startsWith(`${sourceFolder}/`);
 }
 
+function staleNotionIdCandidates(docs: MarkdownDocument[], byId: Map<string, string>) {
+	return docs.map((doc) => {
+		const notionId = typeof doc.props["notion-id"] === "string" ? doc.props["notion-id"] : null;
+		return {
+			path: doc.file.path,
+			notionId,
+			staleNotionId: Boolean(notionId && !byId.has(notionId) && !byId.has(compactNotionId(notionId))),
+		};
+	});
+}
+
 function getDocumentTitle(
 	file: TFile,
 	props: Record<string, unknown>,
@@ -454,6 +509,10 @@ function compactNotionId(value: string): string {
 function notionIdKeys(value: string): string[] {
 	const compact = compactNotionId(value);
 	return compact === value ? [value] : [value, compact];
+}
+
+function formatRatio(value: number): string {
+	return `${Math.round(value * 100)}%`;
 }
 
 function getReturnedPageId(value: unknown): string | null {

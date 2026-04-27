@@ -1,5 +1,6 @@
 import { Conflict, NotionFreezeSettings, PageSyncEntry, SyncedDatabase } from "./types";
 import { effectiveAutoSyncEnabled } from "./settings-data";
+import { normalizeForCompare, pathStartsWith, resolveDatabasePathModel, resolvePagePathModel } from "./path-model";
 
 export type AutoSyncEntry =
 	| { type: "database"; entry: SyncedDatabase }
@@ -40,17 +41,20 @@ export function findAutoSyncEntryForPath(
 	settings: NotionFreezeSettings,
 	path: string
 ): AutoSyncEntry | null {
-	const normalizedPath = normalizeForCompare(path);
-	for (const entry of settings.databases) {
-		if (pathStartsWith(normalizedPath, entry.outputFolder)) {
-			return { type: "database", entry };
-		}
-	}
+	const exactPage = settings.pages.find((entry) =>
+		resolvePagePathModel(settings, entry).pageFilePath &&
+		normalizeForCompare(resolvePagePathModel(settings, entry).pageFilePath ?? "") === normalizeForCompare(path)
+	);
+	if (exactPage) return { type: "page", entry: exactPage };
+
+	const databaseMatches = settings.databases.filter((entry) =>
+		pathStartsWith(path, resolveDatabasePathModel(settings, entry).pushSourceFolder)
+	);
+	if (databaseMatches.length === 1) return { type: "database", entry: databaseMatches[0] };
+	if (databaseMatches.length > 1) return null;
+
 	for (const entry of settings.pages) {
-		if (entry.lastFilePath && normalizeForCompare(entry.lastFilePath) === normalizedPath) {
-			return { type: "page", entry };
-		}
-		if (pathStartsWith(normalizedPath, entry.outputFolder)) {
+		if (pathStartsWith(path, resolvePagePathModel(settings, entry).pageParentFolder)) {
 			return { type: "page", entry };
 		}
 	}
@@ -127,13 +131,4 @@ export class AutoSyncQueue {
 
 function jobKey(job: AutoSyncJob): string {
 	return `${job.entryType}:${job.entryId}:${job.path}`;
-}
-
-function pathStartsWith(path: string, folder: string): boolean {
-	const normalizedFolder = normalizeForCompare(folder);
-	return Boolean(normalizedFolder) && (path === normalizedFolder || path.startsWith(`${normalizedFolder}/`));
-}
-
-function normalizeForCompare(path: string): string {
-	return path.replace(/\\/g, "/").replace(/\/+/g, "/").replace(/^\/+|\/+$/g, "");
 }

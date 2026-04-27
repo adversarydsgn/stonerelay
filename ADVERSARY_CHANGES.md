@@ -2,6 +2,27 @@
 
 Fork-side changes to `stonerelay` (vs. upstream `ran-codes/obsidian-notion-database-sync`).
 
+## v0.9.6 — 2026-04-27
+
+Post-incident path model, safety gates, diagnostics, and BRAT status.
+
+**Behavior notes:**
+- Adds a central path model in `src/path-model.ts` for configured parent folders, database content folders, discovered content folders, push source folders, pull target folders, page file paths, page parent folders, and error-log folders.
+- Centralizes push, pull, retry, conflict-resolution, and auto-sync safety gates in `src/sync-safety.ts`.
+- Adds a user-action interaction matrix in `src/action-audit.ts` and `_artifacts/audits/AUDIT-Stonerelay-v0.9.6-UserActionMatrix.md`.
+- Push hard-blocks mismatched `notion-database-id` files in push source folders to prevent the BUG-540 contamination regression.
+- Push hard-blocks shared resolved content folders and unsafe ancestor/descendant overlap before any Notion mutation.
+- Manual Push and Push All both route through `evaluatePushSafety`.
+- Retry failed rows validates direction-specific IDs, so push retries must be vault paths inside the resolved source folder and pull retries remain Notion row IDs.
+- Conflict Keep Vault routes through push safety; Conflict Keep Notion routes through pull safety.
+- Page auto-sync routes by exact `lastFilePath` before broad folder matching.
+- Settings UX distinguishes the configured parent folder from the actual content/source folder, and row readiness copy surfaces blockers, warnings, and ready states.
+- Stale `notion-id` protective skips now escalate when a push would skip more than `10` files or more than `25%` of the candidate set, requiring explicit operator confirmation before proceeding.
+- Adds a dedicated Diagnostics panel with per-database push/pull readiness, last sync timestamps, conflict count, and stale-ID preview.
+- Adds a BRAT/install status panel showing installed version versus the latest GitHub release for `adversarydsgn/stonerelay`, with a manual "Check for updates" refresh and no automatic updater.
+- Database auto-sync execution remains disabled while page auto-sync remains refresh-only.
+- Adds the Bugs shared-parent regression test fixture so unrelated sibling database files under `3. System/` cannot be pushed into Bugs.
+
 ## v0.9.5 — 2026-04-27
 
 Uses the actual database content folder for push safety.

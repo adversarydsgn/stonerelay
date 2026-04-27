@@ -1,6 +1,8 @@
 import { Client } from "@notionhq/client";
 import { AutoSyncOverride, Conflict, NotionFreezeSettings, PageSyncEntry, SyncDirection, SyncError, SyncGroup, SyncedDatabase } from "./types";
-import { effectiveAutoSyncEnabled, resolveDatabaseContentFolder } from "./settings-data";
+import { effectiveAutoSyncEnabled } from "./settings-data";
+import { resolveDatabasePathModel } from "./path-model";
+import { evaluatePushSafety, pushReadinessSummary } from "./sync-safety";
 
 export interface DatabaseMetadata {
 	title: string;
@@ -168,12 +170,12 @@ export function shouldAutoFillDatabaseName(
 
 export function vaultFolderHelper(direction: SyncDirection): string {
 	if (direction === "push") {
-		return "Vault folder containing markdown files to push to Notion. Files in this folder will be uploaded as Notion rows.";
+		return "Parent folder used to organize this database. Push scans the resolved database source folder shown in the preview.";
 	}
 	if (direction === "bidirectional") {
-		return "Vault folder used for both directions. Files here will be both written-to (from Notion pulls) and read-from (for Notion pushes).";
+		return "Parent folder used to organize this database. Pull writes and Push reads the resolved database source folder shown in the preview.";
 	}
-	return "Vault folder where pulled notes will be created. Existing files with same name will be overwritten.";
+	return "Parent folder where this database folder will be created. Existing row files in the resolved content folder can be updated.";
 }
 
 export function buildConnectionPreview(input: ConnectionPreviewInput): string {
@@ -196,7 +198,7 @@ export function buildConnectionPreviewRows(input: ConnectionPreviewInput): Previ
 		? `✓ Connected to "${metadata.title}" · ${details.join(" · ")}`
 		: `✓ Connected to "${metadata.title}"`;
 	const folderState = vault.exists ? "exists" : "does not exist";
-	const folder = `Vault folder \`${displayFolderPath(vault.path)}\` ${folderState}, ${vault.markdownFiles} .md files`;
+	const folder = `Database source folder \`${displayFolderPath(vault.path)}\` ${folderState}, ${vault.markdownFiles} .md files`;
 	return [
 		{ icon: "✓", text: connected.slice(2) },
 		{ icon: vault.exists ? "✓" : "⚠", text: folder },
@@ -340,16 +342,30 @@ export function folderScopeWarning(
 	settings: NotionFreezeSettings,
 	entry: SyncedDatabase
 ): FolderScopeWarning | null {
-	const folder = normalizeFolder(resolveDatabaseContentFolder(settings, entry));
+	const folder = normalizeFolder(resolveDatabasePathModel(settings, entry).pushSourceFolder);
 	if (!folder) return null;
 	const sharedCount = settings.databases.filter((candidate) =>
-		candidate.id !== entry.id && normalizeFolder(resolveDatabaseContentFolder(settings, candidate)) === folder
+		candidate.id !== entry.id && normalizeFolder(resolveDatabasePathModel(settings, candidate).pushSourceFolder) === folder
 	).length;
 	if (sharedCount === 0) return null;
 	return {
 		sharedCount,
 		message: `Folder shared with ${sharedCount} other database${sharedCount === 1 ? "" : "s"}; Push scans that folder.`,
 	};
+}
+
+export function databasePathCopy(settings: NotionFreezeSettings, entry: SyncedDatabase): string {
+	const model = resolveDatabasePathModel(settings, entry);
+	return `Parent: ${displayFolderPath(model.configuredParentFolder)} · Content/source: ${displayFolderPath(model.databaseContentFolder)} · Push scans: ${displayFolderPath(model.pushSourceFolder)}`;
+}
+
+export function databaseReadinessCopy(settings: NotionFreezeSettings, entry: SyncedDatabase): string {
+	const decision = evaluatePushSafety({
+		settings,
+		entry,
+		allowDisabledEntry: true,
+	});
+	return pushReadinessSummary(decision);
 }
 
 export function syncErrorSummary(errors: Pick<SyncError, "error">[]): SyncErrorSummary {

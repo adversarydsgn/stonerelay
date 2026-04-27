@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { AutoSyncQueue, createBackgroundConflict, findAutoSyncEntryForPath, isAutoSyncEligible } from "../src/auto-sync";
-import { NotionFreezeSettings, SyncedDatabase } from "../src/types";
+import { NotionFreezeSettings, PageSyncEntry, SyncedDatabase } from "../src/types";
 
 function database(overrides: Partial<SyncedDatabase> = {}): SyncedDatabase {
 	return {
@@ -29,13 +29,32 @@ function database(overrides: Partial<SyncedDatabase> = {}): SyncedDatabase {
 	};
 }
 
-function settings(entry = database()): NotionFreezeSettings {
+function page(overrides: Partial<PageSyncEntry> = {}): PageSyncEntry {
+	return {
+		id: overrides.id ?? "page-1",
+		type: "page",
+		name: overrides.name ?? "Page",
+		pageId: overrides.pageId ?? "fedcba9876543210fedcba9876543210",
+		outputFolder: overrides.outputFolder ?? "_relay",
+		errorLogFolder: overrides.errorLogFolder ?? "",
+		groupId: overrides.groupId ?? null,
+		enabled: overrides.enabled ?? true,
+		autoSync: overrides.autoSync ?? "inherit",
+		lastSyncedAt: overrides.lastSyncedAt ?? "2026-04-27T10:00:00.000Z",
+		lastSyncStatus: overrides.lastSyncStatus ?? "ok",
+		lastSyncError: overrides.lastSyncError,
+		current_sync_id: overrides.current_sync_id ?? null,
+		lastFilePath: overrides.lastFilePath ?? "_relay/Exact Page.md",
+	};
+}
+
+function settings(entry = database(), pages: PageSyncEntry[] = []): NotionFreezeSettings {
 	return {
 		apiKey: "ntn_test",
 		defaultOutputFolder: "_relay",
 		defaultErrorLogFolder: "",
 		databases: [entry],
-		pages: [],
+		pages,
 		groups: [],
 		pendingConflicts: [],
 		autoSyncEnabled: true,
@@ -71,11 +90,25 @@ describe("auto-sync eligibility", () => {
 	});
 
 	it("finds configured entries by vault path", () => {
-		expect(findAutoSyncEntryForPath(settings(), "_relay/db/Note.md")).toMatchObject({
+		expect(findAutoSyncEntryForPath(settings(), "_relay/db/DB/Note.md")).toMatchObject({
 			type: "database",
 			entry: { id: "db-1" },
 		});
 		expect(findAutoSyncEntryForPath(settings(), "elsewhere/Note.md")).toBeNull();
+	});
+
+	it("uses resolved database content folders and prefers exact standalone page files", () => {
+		const db = database({ id: "db-1", outputFolder: "_relay", name: "Exact Page" });
+		const exactPage = page({ id: "page-1", outputFolder: "_relay", lastFilePath: "_relay/Exact Page.md" });
+
+		expect(findAutoSyncEntryForPath(settings(db, [exactPage]), "_relay/Exact Page.md")).toMatchObject({
+			type: "page",
+			entry: { id: "page-1" },
+		});
+		expect(findAutoSyncEntryForPath(settings(db, [exactPage]), "_relay/Exact Page/Row.md")).toMatchObject({
+			type: "database",
+			entry: { id: "db-1" },
+		});
 	});
 });
 

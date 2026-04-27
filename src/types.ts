@@ -158,6 +158,7 @@ export interface SyncRunOptions {
 	startAfterRowId?: string | null;
 	retryRowIds?: string[];
 	nestUnderDbName?: boolean;
+	allowStaleNotionIdThresholdProceed?: boolean;
 	bidirectional?: {
 		sourceOfTruth: SourceOfTruth | null;
 		lastSyncedAt?: string | null;

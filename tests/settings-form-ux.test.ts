@@ -59,17 +59,17 @@ describe("form UX polish v0.6.3/v0.6.4", () => {
 		);
 	});
 
-	test("vault folder helper text pivots on direction change", () => {
-		expect(vaultFolderHelper("pull")).toBe(
-			"Vault folder where pulled notes will be created. Existing files with same name will be overwritten."
-		);
-		expect(vaultFolderHelper("push")).toBe(
-			"Vault folder containing markdown files to push to Notion. Files in this folder will be uploaded as Notion rows."
-		);
-		expect(vaultFolderHelper("bidirectional")).toBe(
-			"Vault folder used for both directions. Files here will be both written-to (from Notion pulls) and read-from (for Notion pushes)."
-		);
-	});
+		test("vault folder helper text pivots on direction change", () => {
+			expect(vaultFolderHelper("pull")).toBe(
+				"Parent folder where this database folder will be created. Existing row files in the resolved content folder can be updated."
+			);
+			expect(vaultFolderHelper("push")).toBe(
+				"Parent folder used to organize this database. Push scans the resolved database source folder shown in the preview."
+			);
+			expect(vaultFolderHelper("bidirectional")).toBe(
+				"Parent folder used to organize this database. Pull writes and Push reads the resolved database source folder shown in the preview."
+			);
+		});
 
 	test("test connection preview shows row + file counts", async () => {
 		const preview = buildConnectionPreview({
@@ -83,7 +83,7 @@ describe("form UX polish v0.6.3/v0.6.4", () => {
 		});
 
 		expect(preview).toContain('✓ Connected to "Sessions DB (Test Copy)" · 23 properties · 23 rows');
-		expect(preview).toContain("✓ Vault folder `_relay/sessions-test/` exists, 5 .md files");
+			expect(preview).toContain("✓ Database source folder `_relay/sessions-test/` exists, 5 .md files");
 		expect(preview).toContain("→ With Pull selected: this sync will create 23 markdown files.");
 		expect(buildConnectionPreviewRows({
 			direction: "pull",
@@ -95,7 +95,7 @@ describe("form UX polish v0.6.3/v0.6.4", () => {
 			vault: vaultWithFiles,
 		})).toEqual([
 			{ icon: "✓", text: 'Connected to "Sessions DB (Test Copy)" · 23 properties · 23 rows' },
-			{ icon: "✓", text: "Vault folder `_relay/sessions-test/` exists, 5 .md files" },
+				{ icon: "✓", text: "Database source folder `_relay/sessions-test/` exists, 5 .md files" },
 			{ icon: "→", text: "With Pull selected: this sync will create 23 markdown files." },
 		]);
 	});

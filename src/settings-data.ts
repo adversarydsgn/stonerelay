@@ -2,6 +2,11 @@ import { promises as fs } from "fs";
 import { dirname } from "path";
 import { DEFAULT_SETTINGS, NotionFreezeSettings, PageSyncEntry, SyncDirection, SyncError, SyncGroup, SyncedDatabase, AutoSyncOverride } from "./types";
 import { applyPhaseTransition } from "./sync-state";
+import {
+	resolveConfiguredParentFolder,
+	resolveDatabaseContentFolder as resolveCentralDatabaseContentFolder,
+	resolveErrorLogFolder as resolveCentralErrorLogFolder,
+} from "./path-model";
 
 export type DatabaseInput = Partial<SyncedDatabase> & {
 	name?: string;
@@ -196,21 +201,14 @@ export function resolveOutputFolder(
 	settings: NotionFreezeSettings,
 	entry?: Pick<SyncedDatabase | PageSyncEntry, "outputFolder">
 ): string {
-	return (
-		entry?.outputFolder?.trim() ||
-		settings.defaultOutputFolder?.trim() ||
-		"_relay"
-	);
+	return resolveConfiguredParentFolder(settings, entry);
 }
 
 export function resolveDatabaseContentFolder(
 	settings: NotionFreezeSettings,
 	entry: Pick<SyncedDatabase, "name" | "outputFolder" | "nest_under_db_name">
 ): string {
-	const folder = resolveOutputFolder(settings, entry);
-	if (!entry.nest_under_db_name) return folder;
-	const name = safeFolderName(entry.name.trim() || "Untitled Database");
-	return `${folder.replace(/\/+$/g, "")}/${name}`;
+	return resolveCentralDatabaseContentFolder(settings, entry);
 }
 
 export function sharedOutputFolderDatabases(
@@ -229,11 +227,7 @@ export function resolveErrorLogFolder(
 	settings: Pick<NotionFreezeSettings, "defaultErrorLogFolder">,
 	entry?: Pick<SyncedDatabase | PageSyncEntry, "errorLogFolder">
 ): string | null {
-	return (
-		entry?.errorLogFolder?.trim() ||
-		settings.defaultErrorLogFolder?.trim() ||
-		null
-	);
+	return resolveCentralErrorLogFolder(settings, entry);
 }
 
 export function effectiveAutoSyncEnabled(
@@ -270,7 +264,7 @@ export async function syncAll(
 	for (const entry of enabled) {
 		notice?.(`Syncing ${entry.name}...`);
 		try {
-			const result = await runSync(entry, resolveOutputFolder(nextSettings, entry));
+				const result = await runSync(entry, resolveOutputFolder(nextSettings, entry));
 			ok++;
 			const now = new Date().toISOString();
 			const errors = result
@@ -368,10 +362,6 @@ function shouldRunForMode(direction: SyncDirection, mode: SyncMode): boolean {
 
 function normalizeFolder(path: string): string {
 	return path.replace(/\\/g, "/").replace(/\/+/g, "/").replace(/^\/+|\/+$/g, "").toLowerCase();
-}
-
-function safeFolderName(name: string): string {
-	return name.replace(/[\\/:*?"<>|]/g, "-").trim() || "Untitled Database";
 }
 
 function normalizeDirection(direction: unknown): SyncDirection {
