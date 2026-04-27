@@ -2,6 +2,17 @@
 
 Fork-side changes to `stonerelay` (vs. upstream `ran-codes/obsidian-notion-database-sync`).
 
+## v0.9.2 — 2026-04-27
+
+Disables unsafe database background auto-sync execution.
+
+**Behavior notes:**
+- Database watcher events no longer execute background pushes because the existing push path is database-wide, not file-scoped.
+- Database rows now show `Background push paused` instead of implying database auto-sync is ready.
+- Manual Pull and Push remain available.
+- Page auto-sync remains refresh-only because it writes only to the configured vault page file.
+- Removes the internal `Phase 2` label from database rows.
+
 ## v0.9.1 — 2026-04-27
 
 Clarifies the v0.9.0 settings row controls.

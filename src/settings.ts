@@ -375,9 +375,6 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 		desc.append(document.createTextNode(`${entry.databaseId}  ·  ${entry.outputFolder || "Default folder"}  ·  ${directionIcon(entry)} ${directionLabelShort(entry)}  ·  ${lastEditSideIndicator(entry, this.plugin.settings.pendingConflicts)}  ·  `));
 		desc.appendChild(this.formatLastSync(entry));
 		desc.append(document.createTextNode(`  ·  ${autoSyncReadiness(entry, this.plugin.settings.pendingConflicts)}  ·  ${autoSyncEffectiveLabel(this.plugin.settings, entry, "database")}`));
-		if (entry.current_phase === "phase_2") {
-			desc.append(document.createTextNode("  ·  Phase 2"));
-		}
 		if (entry.lastSyncStatus === "partial" && entry.lastSyncErrors.length > 0) {
 			desc.append(document.createTextNode(`  ·  ${entry.lastSyncErrors.length} failed`));
 		}

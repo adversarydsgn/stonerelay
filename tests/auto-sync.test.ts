@@ -60,7 +60,14 @@ describe("auto-sync eligibility", () => {
 		})] }, { type: "database", entry })).toBe(false);
 		expect(isAutoSyncEligible(settings(database({ lastSyncStatus: "partial" })), { type: "database", entry: database({ lastSyncStatus: "partial" }) })).toBe(false);
 		expect(isAutoSyncEligible(settings(database({ current_sync_id: "sync-1" })), { type: "database", entry: database({ current_sync_id: "sync-1" }) })).toBe(false);
-		expect(isAutoSyncEligible(settings(database({ autoSync: "on" })), { type: "database", entry: database({ autoSync: "on" }) })).toBe(true);
+		expect(isAutoSyncEligible(settings(database({ autoSync: "on" })), { type: "database", entry: database({ autoSync: "on" }) })).toBe(false);
+	});
+
+	it("keeps database background auto-sync disabled until row-scoped push exists", () => {
+		expect(isAutoSyncEligible(settings(database({ autoSync: "on", lastSyncStatus: "ok" })), {
+			type: "database",
+			entry: database({ autoSync: "on", lastSyncStatus: "ok" }),
+		})).toBe(false);
 	});
 
 	it("finds configured entries by vault path", () => {

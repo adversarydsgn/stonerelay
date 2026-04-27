@@ -31,7 +31,7 @@ export function isAutoSyncEligible(
 	if (entry.lastSyncStatus && BLOCKED_STATUSES.has(entry.lastSyncStatus)) return false;
 	if (!entry.outputFolder.trim()) return false;
 	if (type === "database") {
-		return entry.direction === "push" || entry.direction === "bidirectional";
+		return false;
 	}
 	return true;
 }

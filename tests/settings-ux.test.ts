@@ -128,6 +128,7 @@ describe("pegged row helpers", () => {
 		expect(pendingConflictCount(entry, conflicts)).toBe(1);
 		expect(autoSyncReadiness(entry, conflicts)).toBe("Blocked: conflicts");
 		expect(autoSyncReadiness({ ...entry, lastSyncStatus: "partial" }, [])).toBe("Blocked: partial");
+		expect(autoSyncReadiness(entry, [])).toBe("Background push paused");
 	});
 
 	it("uses persisted sync fields for history tooltip text", () => {

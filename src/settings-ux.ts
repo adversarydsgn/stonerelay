@@ -288,7 +288,7 @@ export function autoSyncReadiness(entry: Pick<SyncedDatabase, "direction" | "out
 	if (entry.lastSyncStatus && ["partial", "error", "cancelled", "interrupted"].includes(entry.lastSyncStatus)) {
 		return `Blocked: ${entry.lastSyncStatus}`;
 	}
-	return "Ready for future auto-sync";
+	return "Background push paused";
 }
 
 export function autoSyncEffectiveLabel(

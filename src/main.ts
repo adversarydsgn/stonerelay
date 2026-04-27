@@ -836,9 +836,6 @@ export default class NotionFreezePlugin extends Plugin {
 
 	private async runAutoSyncJob(job: AutoSyncJob): Promise<void> {
 		if (job.entryType === "database") {
-			const entry = this.settings.databases.find((candidate) => candidate.id === job.entryId);
-			if (!entry || !isAutoSyncEligible(this.settings, { type: "database", entry })) return;
-			await this.pushOneConfiguredDatabase(entry);
 			return;
 		}
 		const page = this.settings.pages.find((candidate) => candidate.id === job.entryId);
