@@ -7,6 +7,7 @@ import {
 	confirmStaleNotionIdSafety,
 	retryDirectionForErrors,
 	validatePushCandidateFiles,
+	validatePullCandidateFiles,
 } from "../src/sync-safety";
 import { NotionFreezeSettings, SyncError, SyncedDatabase } from "../src/types";
 
@@ -52,13 +53,13 @@ function settings(databases: SyncedDatabase[]): NotionFreezeSettings {
 		autoSyncEnabled: false,
 		autoSyncDatabasesByDefault: false,
 		autoSyncPagesByDefault: false,
-		schemaVersion: 5,
+		schemaVersion: 6,
 	};
 }
 
 describe("sync safety gates", () => {
 	it("keeps the §6 user-action audit complete", () => {
-		expect(USER_ACTION_AUDIT).toHaveLength(24);
+		expect(USER_ACTION_AUDIT).toHaveLength(31);
 		expect(USER_ACTION_AUDIT.every((row) => row.pathHelper && row.safetyGate)).toBe(true);
 		expect(USER_ACTION_AUDIT.map((row) => row.action)).toContain("Apply conflict resolution: Keep Vault");
 	});
@@ -81,6 +82,23 @@ describe("sync safety gates", () => {
 		const decision = evaluatePushSafety({ settings: settings([broad, nested]), entry: broad, folderExists: true, allowDisabledEntry: true });
 
 		expect(decision.hardBlocks.map((issue) => issue.code)).toContain("overlapping_content_folder");
+	});
+
+	it("hard-blocks pull when resolved folders overlap before Notion query", () => {
+		const broad = database({ id: "broad", name: "Broad DB", outputFolder: "3. System", nest_under_db_name: false });
+		const nested = database({ id: "nested", name: "Nested DB", databaseId: sessionsDbId, outputFolder: "3. System", nest_under_db_name: true });
+		const decision = evaluatePullSafety({ settings: settings([broad, nested]), entry: broad });
+
+		expect(decision.hardBlocks.map((issue) => issue.code)).toContain("overlapping_content_folder");
+		expect(decision.hardBlocks[0].message).toContain("Pull blocked");
+	});
+
+	it("hard-blocks pull when two configured entries point at the same Notion database id", () => {
+		const first = database({ id: "first", name: "First DB" });
+		const second = database({ id: "second", name: "Second DB", outputFolder: "Other" });
+		const issues = validatePullCandidateFiles(settings([first, second]), first);
+
+		expect(issues.map((issue) => issue.code)).toContain("same_database_collision");
 	});
 
 	it("rejects push retries outside the resolved content folder", () => {
@@ -137,6 +155,16 @@ describe("sync safety gates", () => {
 
 		expect(issues).toHaveLength(1);
 		expect(issues[0].code).toBe("mismatched_notion_database_id");
+	});
+
+	it("hard-blocks duplicate notion-id values before any Notion write", () => {
+		const issues = validatePushCandidateFiles(bugsDbId, [
+			{ path: "3. System/Bugs DB/one.md", notionId: "abc123" },
+			{ path: "3. System/Bugs DB/two.md", notionId: "abc123" },
+		]);
+
+		expect(issues.map((issue) => issue.code)).toContain("duplicate_notion_id");
+		expect(issues[0].message).toContain("Stonerelay does not pick a winner");
 	});
 
 	it("proves the Bugs incident fixture cannot push unrelated sibling database files into Bugs", () => {

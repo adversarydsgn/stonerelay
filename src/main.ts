@@ -13,10 +13,15 @@ import { importStandalonePage, refreshStandalonePage } from "./page-sync";
 import { parseNotionPageId } from "./settings-ux";
 import { isSafeVaultRelativePath, resolveDatabasePathModel } from "./path-model";
 import { confirmStaleNotionIdSafety, evaluatePullSafety, evaluatePushSafety, retryDirectionForErrors, StaleNotionIdSafetyState } from "./sync-safety";
+import { ReservationHandle, ReservationManager, ReservationOperationType, ReservationPolicy, ReservationRejectedError } from "./reservations";
+import { PushIntentLog, PushIntentRecovery, recoverPushIntents } from "./push-intents";
 
 export default class NotionFreezePlugin extends Plugin {
 	settings: NotionFreezeSettings = migrateData(null);
 	private syncControllers = new Map<string, AbortController>();
+	private syncReservations = new Map<string, ReservationHandle>();
+	private reservations = new ReservationManager();
+	private pushIntentRecoveries: PushIntentRecovery[] = [];
 	private cancellingAll = false;
 	private autoSyncQueue = new AutoSyncQueue((job) => this.runAutoSyncJob(job));
 
@@ -92,7 +97,7 @@ export default class NotionFreezePlugin extends Plugin {
 	}
 
 	isSyncActive(entryId: string): boolean {
-		return this.syncControllers.has(entryId);
+		return this.syncControllers.has(entryId) || this.reservations.hasEntry(entryId);
 	}
 
 	isCancellingAll(): boolean {
@@ -100,24 +105,23 @@ export default class NotionFreezePlugin extends Plugin {
 	}
 
 	hasActiveSyncs(): boolean {
-		return this.syncControllers.size > 0;
+		return this.reservations.size() > 0;
 	}
 
 	cancelSync(entryId: string): void {
 		const controller = this.syncControllers.get(entryId);
-		if (!controller) return;
-		controller.abort();
+		if (!controller && !this.reservations.cancel(entryId)) return;
+		controller?.abort();
 		new Notice("Cancelling sync. Finishing this row first.");
 		(this.app.workspace as any).trigger("stonerelay:settings-updated");
 	}
 
 	cancelAllSyncs(): void {
-		if (this.syncControllers.size === 0) return;
+		if (this.reservations.size() === 0) return;
 		this.cancellingAll = true;
-		for (const controller of this.syncControllers.values()) {
-			controller.abort();
-		}
-		if (this.syncControllers.size > 0) {
+		this.reservations.cancelAll();
+		for (const controller of this.syncControllers.values()) controller.abort();
+		if (this.reservations.size() > 0) {
 			new Notice("Cancelling syncs. Finishing active rows first.");
 		}
 		(this.app.workspace as any).trigger("stonerelay:settings-updated");
@@ -143,7 +147,17 @@ export default class NotionFreezePlugin extends Plugin {
 		const result = await syncAll(
 			this.settings,
 			async (entry, outputFolder) => {
-				return this.syncConfiguredDatabase(entry, outputFolder);
+				const unsafe = this.pullSafetyBlocker(entry);
+				if (unsafe) throw new Error(unsafe);
+				const folder = resolveDatabasePathModel(this.settings, entry, {
+					discoveredContentFolder: this.findFrozenDatabase(normalizeNotionId(entry.databaseId))?.folderPath ?? null,
+				}).pullTargetFolder;
+				const run = await this.beginSync(entry, "full", undefined, "pull", "batch", folder);
+				try {
+					return await this.syncConfiguredDatabase(entry, outputFolder, run.options);
+				} finally {
+					this.finishSync(entry.id);
+				}
 			},
 			(message) => new Notice(message)
 		);
@@ -158,11 +172,17 @@ export default class NotionFreezePlugin extends Plugin {
 			async (entry) => {
 				this.assertSafePushFolder(entry, { allowDisabledEntry: false });
 				const sourceFolder = this.resolvePushSourceFolder(entry);
-				const confirmed = await this.confirmStaleIdThresholdIfNeeded(entry, sourceFolder);
-				if (!confirmed) throw new Error("Push cancelled: stale notion-id threshold requires operator confirmation.");
-				return this.pushConfiguredDatabase(entry, sourceFolder, {
-					allowStaleNotionIdThresholdProceed: true,
-				});
+				const run = await this.beginSync(entry, "full", undefined, "push", "batch", sourceFolder);
+				try {
+					const confirmed = await this.confirmStaleIdThresholdIfNeeded(entry, sourceFolder);
+					if (!confirmed) throw new Error("Push cancelled: stale notion-id threshold requires operator confirmation.");
+					return await this.pushConfiguredDatabase(entry, sourceFolder, {
+						...run.options,
+						allowStaleNotionIdThresholdProceed: true,
+					});
+				} finally {
+					this.finishSync(entry.id);
+				}
 			},
 			(message) => new Notice(message),
 			"push"
@@ -202,14 +222,21 @@ export default class NotionFreezePlugin extends Plugin {
 			new Notice(unsafe);
 			return;
 		}
-		const run = await this.beginSync(entry, type, retryRowIds);
+		const outputFolder = resolveDatabasePathModel(this.settings, entry, {
+			discoveredContentFolder: this.findFrozenDatabase(normalizeNotionId(entry.databaseId))?.folderPath ?? null,
+		}).configuredParentFolder;
+		let run: Awaited<ReturnType<typeof this.beginSync>>;
+		try {
+			run = await this.beginSync(entry, type, retryRowIds, "pull", "manual", outputFolder);
+		} catch (err) {
+			this.noticeReservationError(err);
+			return;
+		}
 		try {
 			new Notice(`Syncing ${entry.name}...`);
 			const result = await this.syncConfiguredDatabase(
 				entry,
-				resolveDatabasePathModel(this.settings, entry, {
-					discoveredContentFolder: this.findFrozenDatabase(normalizeNotionId(entry.databaseId))?.folderPath ?? null,
-				}).configuredParentFolder,
+				outputFolder,
 				run.options
 			);
 			const now = new Date().toISOString();
@@ -284,13 +311,18 @@ export default class NotionFreezePlugin extends Plugin {
 			return;
 		}
 		const sourceFolder = this.resolvePushSourceFolder(entry);
-		const confirmed = await this.confirmStaleIdThresholdIfNeeded(entry, sourceFolder);
-		if (!confirmed) {
-			new Notice(`Push cancelled: ${entry.name} has stale notion-id threshold risk.`);
+		let run: Awaited<ReturnType<typeof this.beginSync>>;
+		try {
+			run = await this.beginSync(entry, type, retryRowIds, "push", "manual", sourceFolder);
+		} catch (err) {
+			this.noticeReservationError(err);
 			return;
 		}
-		const run = await this.beginSync(entry, type, retryRowIds);
 		try {
+			const confirmed = await this.confirmStaleIdThresholdIfNeeded(entry, sourceFolder);
+			if (!confirmed) {
+				throw new SyncCancelled();
+			}
 			new Notice(`Pushing ${entry.name}...`);
 			const result = await this.pushConfiguredDatabase(entry, sourceFolder, {
 				...run.options,
@@ -440,6 +472,15 @@ export default class NotionFreezePlugin extends Plugin {
 		}
 		const client = createNotionClient(this.settings.apiKey);
 		const folder = outputFolder?.trim() || this.settings.defaultOutputFolder || "_relay";
+		const reservation = await this.reservations.acquire({
+			entryId: `page:${pageId}`,
+			entryName: pageId,
+			databaseId: pageId,
+			vaultFolder: folder,
+			type: "page",
+			policy: "manual",
+		});
+		try {
 		const result = await importStandalonePage(this.app, client, pageId, folder);
 		const now = new Date().toISOString();
 		const existing = this.settings.pages.find((page) => page.pageId === pageId);
@@ -466,6 +507,9 @@ export default class NotionFreezePlugin extends Plugin {
 		(this.app.workspace as any).trigger("stonerelay:settings-updated");
 		new Notice(`Imported page: ${result.title}`);
 		return nextPage;
+		} finally {
+			reservation.release();
+		}
 	}
 
 	async refreshOnePage(entry: PageSyncEntry): Promise<void> {
@@ -477,8 +521,17 @@ export default class NotionFreezePlugin extends Plugin {
 			new Notice("Notion API key not set. Configure in plugin settings.");
 			throw new Error("Notion API key not set.");
 		}
-		const syncId = crypto.randomUUID();
-		this.syncControllers.set(entry.id, new AbortController());
+		const reservation = await this.reservations.acquire({
+			entryId: entry.id,
+			entryName: entry.name,
+			databaseId: entry.pageId,
+			vaultFolder: entry.outputFolder,
+			type: "page",
+			policy: "manual",
+		});
+		const syncId = reservation.id;
+		this.syncControllers.set(entry.id, reservation.controller);
+		this.syncReservations.set(entry.id, reservation);
 		this.settings = updatePage(this.settings, {
 			...entry,
 			current_sync_id: syncId,
@@ -567,13 +620,19 @@ export default class NotionFreezePlugin extends Plugin {
 
 		const client = createNotionClient(this.settings.apiKey);
 		const notice = new Notice(`Pushing "${entry.name}" to Notion...`, 0);
+		const pushIntentLogger = options.reservationId ? this.createPushIntentLogger(options.reservationId) : null;
 		try {
 			const result = await pushDatabase(
 				this.app,
 				client,
 				normalizeNotionId(entry.databaseId),
 				sourceFolder,
-				options
+				{
+					...options,
+					onPushIntentCreating: options.onPushIntentCreating ?? pushIntentLogger?.recordCreating.bind(pushIntentLogger),
+					onPushIntentCreated: options.onPushIntentCreated ?? pushIntentLogger?.recordCreated.bind(pushIntentLogger),
+					onPushIntentCommitted: options.onPushIntentCommitted ?? pushIntentLogger?.recordCommitted.bind(pushIntentLogger),
+				}
 			);
 			notice.hide();
 			return result;
@@ -587,8 +646,17 @@ export default class NotionFreezePlugin extends Plugin {
 		input: string,
 		outputFolder: string
 	): Promise<void> {
+		let reservation: ReservationHandle | null = null;
 		try {
 			const databaseId = normalizeNotionId(input);
+			reservation = await this.reservations.acquire({
+				entryId: `fresh:${databaseId}`,
+				entryName: databaseId,
+				databaseId,
+				vaultFolder: outputFolder,
+				type: "pull",
+				policy: "manual",
+			});
 			const result = await this.syncDatabase(databaseId, outputFolder);
 			new Notice(formatDatabaseResult(result.title, result, "imported"));
 		} catch (err) {
@@ -596,11 +664,22 @@ export default class NotionFreezePlugin extends Plugin {
 			new Notice(
 				`Notion sync error: ${err instanceof Error ? err.message : String(err)}`
 			);
+		} finally {
+			reservation?.release();
 		}
 	}
 
 	private async executeRefresh(db: FrozenDatabase): Promise<void> {
+		let reservation: ReservationHandle | null = null;
 		try {
+			reservation = await this.reservations.acquire({
+				entryId: `refresh:${db.databaseId}`,
+				entryName: db.title,
+				databaseId: db.databaseId,
+				vaultFolder: db.folderPath,
+				type: "pull",
+				policy: "manual",
+			});
 			const result = await this.refreshFrozenDatabase(db);
 			new Notice(formatDatabaseResult(result.title, result, "re-synced"));
 		} catch (err) {
@@ -608,6 +687,8 @@ export default class NotionFreezePlugin extends Plugin {
 			new Notice(
 				`Notion sync error: ${err instanceof Error ? err.message : String(err)}`
 			);
+		} finally {
+			reservation?.release();
 		}
 	}
 
@@ -742,22 +823,43 @@ export default class NotionFreezePlugin extends Plugin {
 		return dbMap.get(databaseId) ?? null;
 	}
 
-	private async beginSync(entry: SyncedDatabase, type: SyncRunType = "full", retryRowIds?: string[]): Promise<{
+	private async beginSync(
+		entry: SyncedDatabase,
+		type: SyncRunType = "full",
+		retryRowIds?: string[],
+		operation: ReservationOperationType = "pull",
+		policy: ReservationPolicy = "manual",
+		vaultFolder = entry.outputFolder
+	): Promise<{
 		type: SyncRunType;
 		errors: SyncError[];
 		get lastCommittedRowId(): string | null;
 		options: SyncRunOptions;
 	}> {
-		const controller = new AbortController();
-		const syncId = crypto.randomUUID();
+		const reservation = await this.reservations.acquire({
+			entryId: entry.id,
+			entryName: entry.name,
+			databaseId: entry.databaseId,
+			vaultFolder,
+			type: operation,
+			policy,
+			maxQueueDepth: policy === "batch" ? 3 : 1,
+		});
+		const controller = reservation.controller;
+		const syncId = reservation.id;
 		const errors: SyncError[] = [];
 		const state = { lastCommittedRowId: entry.lastCommittedRowId };
 		this.syncControllers.set(entry.id, controller);
+		this.syncReservations.set(entry.id, reservation);
 		this.settings = updateDatabase(this.settings, {
 			...entry,
 			current_sync_id: syncId,
 			lastSyncErrors: type === "full" ? [] : entry.lastSyncErrors,
 		});
+		this.settings = {
+			...this.settings,
+			active_reservations: this.reservations.snapshots(),
+		};
 		await this.saveSettings();
 		return {
 			type,
@@ -775,12 +877,19 @@ export default class NotionFreezePlugin extends Plugin {
 				onRowError: (error) => {
 					errors.push(error);
 				},
+				reservationId: reservation.id,
 			},
 		};
 	}
 
 	private finishSync(entryId: string): void {
 		this.syncControllers.delete(entryId);
+		this.syncReservations.get(entryId)?.release();
+		this.syncReservations.delete(entryId);
+		this.settings = {
+			...this.settings,
+			active_reservations: this.reservations.snapshots(),
+		};
 		if (this.cancellingAll && this.syncControllers.size === 0) {
 			this.cancellingAll = false;
 		}
@@ -820,15 +929,45 @@ export default class NotionFreezePlugin extends Plugin {
 			}
 			new Notice("A previous sync was interrupted. Resume from cursor or restart from beginning.");
 		}
+		await this.recoverPushIntentLog();
 	}
 
 	private async saveSettingsAtomic(settings: NotionFreezeSettings): Promise<void> {
 		const adapter = this.app.vault.adapter as PluginDataAdapter;
 		const dataPath = `.obsidian/plugins/${this.manifest.id}/data.json`;
-		const payload = `${JSON.stringify(settings, null, 2)}\n`;
+		const payload = `${JSON.stringify({ ...settings, active_reservations: [] }, null, 2)}\n`;
 		await writePluginDataAtomic(adapter, dataPath, payload, async () => {
-			await this.saveData(settings);
+			await this.saveData({ ...settings, active_reservations: [] });
 		});
+	}
+
+	private createPushIntentLogger(reservationId: string): PushIntentLog {
+		const adapter = this.app.vault.adapter as PluginDataAdapter;
+		return new PushIntentLog(adapter, `.obsidian/plugins/${this.manifest.id}/push-intents.jsonl`, reservationId);
+	}
+
+	private async recoverPushIntentLog(): Promise<void> {
+		const adapter = this.app.vault.adapter as PluginDataAdapter;
+		this.pushIntentRecoveries = await recoverPushIntents(adapter, `.obsidian/plugins/${this.manifest.id}/push-intents.jsonl`);
+		if (this.pushIntentRecoveries.length > 0) {
+			new Notice(`${this.pushIntentRecoveries.length} interrupted Push intent${this.pushIntentRecoveries.length === 1 ? "" : "s"} need recovery. See diagnostics.`);
+		}
+	}
+
+	getActiveOperationSnapshots() {
+		return this.reservations.snapshots();
+	}
+
+	getPushIntentRecoveries(): PushIntentRecovery[] {
+		return [...this.pushIntentRecoveries];
+	}
+
+	private noticeReservationError(err: unknown): void {
+		if (err instanceof ReservationRejectedError) {
+			new Notice(err.message);
+			return;
+		}
+		throw err;
 	}
 
 	private async writeSyncErrorLog(
@@ -1144,7 +1283,13 @@ function formatDatabaseResult(
 	if (result.failed > 0) {
 		msg += `, ${result.failed} failed`;
 	}
+	if (result.backfilled && result.backfilled > 0) {
+		msg += `, ${result.backfilled} legacy frontmatter backfilled`;
+	}
 	msg += ".";
+	if (result.warnings && result.warnings.length > 0) {
+		msg += "\nWarnings:\n" + result.warnings.join("\n");
+	}
 	if (result.errors.length > 0) {
 		msg += "\nErrors:\n" + result.errors.join("\n");
 	}

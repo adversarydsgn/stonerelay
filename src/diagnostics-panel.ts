@@ -1,5 +1,6 @@
 import { NotionFreezeSettings, SyncedDatabase } from "./types";
 import { evaluatePullSafety, evaluatePushSafety } from "./sync-safety";
+import { ActiveReservationSnapshot } from "./reservations";
 
 export type DiagnosticsReadiness = "PASS" | "WARNING" | "BLOCKED";
 
@@ -15,13 +16,18 @@ export interface DatabaseDiagnosticsRow {
 	lastPushedAt: string | null;
 	lastPulledAt: string | null;
 	conflictCount: number;
+	duplicateNotionIdCount: number;
 	staleIdCandidateCount: number;
 	staleIdThresholdWarn: boolean;
+	backfilledFileCount: number;
 }
 
 export interface DiagnosticsOptions {
 	folderExists?: (entry: SyncedDatabase, folder: string) => boolean | undefined;
 	staleIdCandidateCount?: (entry: SyncedDatabase, folder: string) => number;
+	duplicateNotionIdCount?: (entry: SyncedDatabase) => number;
+	backfilledFileCount?: (entry: SyncedDatabase) => number;
+	activeOperations?: ActiveReservationSnapshot[];
 }
 
 export function buildDiagnosticsRows(
@@ -51,8 +57,10 @@ export function buildDiagnosticsRows(
 			lastPushedAt: entry.lastPushedAt,
 			lastPulledAt: entry.lastPulledAt,
 			conflictCount: settings.pendingConflicts.filter((conflict) => !conflict.entryId || conflict.entryId === entry.id).length,
+			duplicateNotionIdCount: options.duplicateNotionIdCount?.(entry) ?? 0,
 			staleIdCandidateCount,
 			staleIdThresholdWarn: staleIdCandidateCount > 5,
+			backfilledFileCount: options.backfilledFileCount?.(entry) ?? 0,
 		};
 	});
 }
@@ -65,6 +73,7 @@ export function renderDiagnosticsPanel(
 	const panel = containerEl.createDiv({ cls: "stonerelay-diagnostics-panel" });
 	panel.createEl("h3", { text: "Diagnostics" });
 	const rows = buildDiagnosticsRows(settings, options);
+	renderActiveOperations(panel, options.activeOperations ?? []);
 	if (rows.length === 0) {
 		panel.createEl("p", {
 			cls: "setting-item-description",
@@ -80,10 +89,32 @@ export function renderDiagnosticsPanel(
 		item.createEl("p", { text: `Push readiness: ${row.pushReadiness} - ${row.pushReason}` });
 		item.createEl("p", { text: `Pull readiness: ${row.pullReadiness} - ${row.pullReason}` });
 		item.createEl("p", { text: `Last push: ${row.lastPushedAt ?? "Never"} · Last pull: ${row.lastPulledAt ?? "Never"}` });
-		item.createEl("p", { text: `Conflicts: ${row.conflictCount}` });
+		item.createEl("p", { text: `Conflicts: ${row.conflictCount} · Duplicate notion-id files: ${row.duplicateNotionIdCount}` });
 		item.createEl("p", {
 			text: `Stale-ID candidates: ${row.staleIdCandidateCount}${row.staleIdThresholdWarn ? " ⚠" : ""}`,
 		});
+		item.createEl("p", { text: `Backfilled legacy files: ${row.backfilledFileCount}` });
+	}
+}
+
+function renderActiveOperations(panel: HTMLElement, operations: ActiveReservationSnapshot[]): void {
+	const section = panel.createDiv({ cls: "stonerelay-active-operations" });
+	section.createEl("h4", { text: "Active operations" });
+	if (operations.length === 0) {
+		section.createEl("p", { cls: "setting-item-description", text: "No active operations." });
+		return;
+	}
+	const table = section.createEl("table");
+	const head = table.createEl("thead").createEl("tr");
+	for (const label of ["Start time", "Type", "Entry id"]) {
+		head.createEl("th", { text: label });
+	}
+	const body = table.createEl("tbody");
+	for (const operation of operations) {
+		const row = body.createEl("tr");
+		row.createEl("td", { text: operation.startedAt });
+		row.createEl("td", { text: operation.type });
+		row.createEl("td", { text: operation.entryId });
 	}
 }
 

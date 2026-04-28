@@ -60,7 +60,7 @@ function settings(entry = database(), pages: PageSyncEntry[] = []): NotionFreeze
 		autoSyncEnabled: true,
 		autoSyncDatabasesByDefault: true,
 		autoSyncPagesByDefault: false,
-		schemaVersion: 5,
+		schemaVersion: 6,
 	};
 }
 

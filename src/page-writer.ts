@@ -4,6 +4,7 @@ import {
 import { App, normalizePath, TFile } from "obsidian";
 import { PageWriteOptions, PageWriteResult, StandalonePageWriteOptions } from "./types";
 import { convertBlocksToMarkdown, convertRichText, fetchAllChildren } from "./block-converter";
+import { modifyAtomic, writeAtomic } from "./atomic-vault-write";
 
 const MAX_FILENAME_STEM_BYTES = 180;
 
@@ -41,11 +42,11 @@ export async function writeDatabaseEntry(
 	// Write file
 	const existingFile = app.vault.getAbstractFileByPath(filePath);
 	if (existingFile instanceof TFile) {
-		await app.vault.modify(existingFile, content);
+		await modifyAtomic(app.vault, existingFile, content);
 		return { status: "updated", filePath, title: safeName };
 	} else {
 		await ensureFolder(app, outputFolder);
-		await app.vault.create(filePath, content);
+		await writeAtomic(app.vault, filePath, content);
 		return { status: "created", filePath, title: safeName };
 	}
 }
@@ -76,11 +77,11 @@ export async function writeStandalonePage(
 	const content = buildFileContent(frontmatter, markdown);
 	const existingFile = app.vault.getAbstractFileByPath(filePath);
 	if (existingFile instanceof TFile) {
-		await app.vault.modify(existingFile, content);
+		await modifyAtomic(app.vault, existingFile, content);
 		return { status: "updated", filePath, title: safeName };
 	}
 	await ensureFolder(app, outputFolder);
-	await app.vault.create(filePath, content);
+	await writeAtomic(app.vault, filePath, content);
 	return { status: "created", filePath, title: safeName };
 }
 

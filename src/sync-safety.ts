@@ -27,6 +27,10 @@ export interface CandidatePushFile {
 	staleNotionId?: boolean;
 }
 
+export interface CandidatePullFile extends CandidatePushFile {
+	legacy?: boolean;
+}
+
 export interface PushSafetyInput {
 	settings: NotionFreezeSettings;
 	entry: SyncedDatabase;
@@ -44,6 +48,7 @@ export interface PullSafetyInput {
 	entry: SyncedDatabase;
 	discoveredContentFolder?: string | null;
 	retryRowIds?: string[];
+	candidateFiles?: CandidatePullFile[];
 }
 
 export interface SafetyDecision {
@@ -93,25 +98,7 @@ export function evaluatePushSafety(input: PushSafetyInput): SafetyDecision {
 		hardBlocks.push(issue("pending_conflicts", `${input.entry.name} has pending conflicts. Resolve them before pushing.`));
 	}
 
-	for (const candidate of input.settings.databases) {
-		if (candidate.id === input.entry.id) continue;
-		const candidateModel = resolveDatabasePathModel(input.settings, candidate);
-		if (normalizeForCompare(candidateModel.pushSourceFolder) === normalizeForCompare(pathModel.pushSourceFolder)) {
-			hardBlocks.push(issue(
-				"shared_resolved_content_folder",
-				`Push source folder "${pathModel.pushSourceFolder}" is a shared resolved content folder with ${candidate.name}. Use database-specific folders before writing to Notion.`,
-				pathModel.pushSourceFolder
-			));
-			continue;
-		}
-		if (pathsOverlap(candidateModel.pushSourceFolder, pathModel.pushSourceFolder)) {
-			hardBlocks.push(issue(
-				"overlapping_content_folder",
-				`Push source folder "${pathModel.pushSourceFolder}" overlaps ${candidate.name} at "${candidateModel.pushSourceFolder}". Push would risk scanning unrelated database files.`,
-				pathModel.pushSourceFolder
-			));
-		}
-	}
+	hardBlocks.push(...overlapIssues(input.settings, input.entry, pathModel.pushSourceFolder, "push"));
 
 	for (const retryId of input.retryRowIds ?? []) {
 		if (!pathStartsWith(retryId, pathModel.pushSourceFolder)) {
@@ -165,6 +152,13 @@ export function evaluatePullSafety(input: PullSafetyInput): SafetyDecision {
 			hardBlocks.push(issue("pull_retry_is_vault_path", `Pull retry expects Notion row IDs, not vault file paths: ${retryId}`, retryId));
 		}
 	}
+	hardBlocks.push(...overlapIssues(input.settings, input.entry, pathModel.pullTargetFolder, "pull"));
+	hardBlocks.push(...sameDatabaseIssues(input.settings, input.entry));
+	for (const file of input.candidateFiles ?? []) {
+		if (file.legacy) {
+			warnings.push(issue("legacy_missing_notion_database_id", `Legacy file lacks notion-database-id and may be backfilled during Pull: ${file.path}`, file.path, "warning"));
+		}
+	}
 
 	return {
 		allowed: hardBlocks.length === 0,
@@ -188,11 +182,18 @@ export function retryDirectionForErrors(errors: Pick<SyncError, "direction">[]):
 }
 
 export function validatePushCandidateFiles(databaseId: string, files: CandidatePushFile[]): SafetyIssue[] {
-	return mismatchedDatabaseFiles(databaseId, files).map((file) => issue(
+	const issues = mismatchedDatabaseFiles(databaseId, files).map((file) => issue(
 		"mismatched_notion_database_id",
 		`File belongs to another Notion database: ${file.path}`,
 		file.path
 	));
+	issues.push(...duplicateNotionIdIssues(files));
+	return issues;
+}
+
+export function validatePullCandidateFiles(settings: NotionFreezeSettings, entry: SyncedDatabase, files: CandidatePullFile[] = []): SafetyIssue[] {
+	const decision = evaluatePullSafety({ settings, entry, candidateFiles: files });
+	return [...decision.hardBlocks, ...decision.warnings];
 }
 
 export function evaluateStaleNotionIdSafety(
@@ -261,10 +262,86 @@ function staleNotionIdWarnings(files: CandidatePushFile[]): SafetyIssue[] {
 		}));
 }
 
+export function duplicateNotionIdIssues(files: CandidatePushFile[]): SafetyIssue[] {
+	const pathsById = new Map<string, string[]>();
+	for (const file of files) {
+		if (typeof file.notionId !== "string") continue;
+		const id = file.notionId.trim();
+		if (!id) continue;
+		const key = id.replace(/-/g, "").toLowerCase();
+		pathsById.set(key, [...(pathsById.get(key) ?? []), file.path]);
+	}
+	const duplicates = [...pathsById.entries()].filter(([, paths]) => paths.length > 1);
+	if (duplicates.length === 0) return [];
+	return [issue(
+		"duplicate_notion_id",
+		[
+			"Push blocked: duplicate notion-id values in source folder",
+			...duplicates.map(([id, paths]) => `  notion-id ${id}: ${paths.join(", ")}`),
+			"Resolve duplicates before retrying. Stonerelay does not pick a winner automatically.",
+		].join("\n"),
+		duplicates[0][1][0]
+	)];
+}
+
+function overlapIssues(
+	settings: NotionFreezeSettings,
+	entry: SyncedDatabase,
+	folder: string,
+	mode: "push" | "pull"
+): SafetyIssue[] {
+	const issues: SafetyIssue[] = [];
+	for (const candidate of settings.databases) {
+		if (candidate.id === entry.id) continue;
+		const candidateModel = resolveDatabasePathModel(settings, candidate);
+		const otherFolder = mode === "push" ? candidateModel.pushSourceFolder : candidateModel.pullTargetFolder;
+		if (normalizeForCompare(otherFolder) === normalizeForCompare(folder)) {
+			issues.push(issue(
+				"shared_resolved_content_folder",
+				mode === "push"
+					? `Push source folder "${folder}" is a shared resolved content folder with ${candidate.name}. Use database-specific folders before writing to Notion.`
+					: `Pull blocked: vault folder "${folder}" overlaps with database "${candidate.name}" (configured at "${otherFolder}").`,
+				folder
+			));
+			continue;
+		}
+		if (pathsOverlap(otherFolder, folder)) {
+			issues.push(issue(
+				"overlapping_content_folder",
+				mode === "push"
+					? `Push source folder "${folder}" overlaps ${candidate.name} at "${otherFolder}". Push would risk scanning unrelated database files.`
+					: `Pull blocked: vault folder "${folder}" overlaps with database "${candidate.name}" (configured at "${otherFolder}").`,
+				folder
+			));
+		}
+	}
+	return issues;
+}
+
+function sameDatabaseIssues(settings: NotionFreezeSettings, entry: SyncedDatabase): SafetyIssue[] {
+	let target: string;
+	try {
+		target = normalizeNotionId(entry.databaseId);
+	} catch {
+		return [];
+	}
+	const duplicate = settings.databases.find((candidate) => {
+		if (candidate.id === entry.id) return false;
+		try {
+			return normalizeNotionId(candidate.databaseId) === target;
+		} catch {
+			return false;
+		}
+	});
+	return duplicate
+		? [issue("same_database_collision", `Pull blocked: ${entry.name} shares Notion database id with ${duplicate.name}.`)]
+		: [];
+}
+
 function looksLikeVaultPath(value: string): boolean {
 	return value.includes("/") || value.includes("\\") || value.endsWith(".md");
 }
 
-function issue(code: string, message: string, path?: string): SafetyIssue {
-	return { code, message, severity: "blocker", path };
+function issue(code: string, message: string, path?: string, severity: SafetySeverity = "blocker"): SafetyIssue {
+	return { code, message, severity, path };
 }

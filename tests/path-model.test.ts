@@ -19,7 +19,7 @@ function settings(databases: SyncedDatabase[] = []): NotionFreezeSettings {
 		autoSyncEnabled: false,
 		autoSyncDatabasesByDefault: false,
 		autoSyncPagesByDefault: false,
-		schemaVersion: 5,
+		schemaVersion: 6,
 	};
 }
 

@@ -50,6 +50,7 @@ export function migrateData(data: Partial<NotionFreezeSettings> | null): NotionF
 	}
 
 	migrated.pendingConflicts = migrated.pendingConflicts ?? [];
+	migrated.active_reservations = [];
 	migrated.databases = (migrated.databases ?? []).map((entry) => {
 		const direction = normalizeDirection((entry as Partial<SyncedDatabase>).direction);
 		const lastSyncedAt = entry.lastSyncedAt ?? null;
@@ -82,6 +83,10 @@ export function migrateData(data: Partial<NotionFreezeSettings> | null): NotionF
 	if (migrated.schemaVersion < 5) {
 		migrated.schemaVersion = 5;
 	}
+	if (migrated.schemaVersion < 6) {
+		migrated.schemaVersion = 6;
+	}
+	migrated.active_reservations = [];
 
 	return migrated;
 }

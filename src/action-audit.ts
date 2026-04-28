@@ -33,4 +33,11 @@ export const USER_ACTION_AUDIT: UserActionAuditRow[] = [
 	{ action: "Startup interrupted-sync recovery", effect: "vault-write", pathHelper: "configured entry ids", safetyGate: "writePluginDataAtomic", notes: "Persists recovery state without running sync jobs." },
 	{ action: "Error-log writing", effect: "vault-write", pathHelper: "resolveErrorLogFolder", safetyGate: "validateVaultFolderPath + atomic temp write", notes: "Writes sanitized logs only to the resolved log folder." },
 	{ action: "Base-file generation/update", effect: "vault-write", pathHelper: "resolveDatabasePathModel", safetyGate: "user-edited .base preservation", notes: "Writes inside the pull target folder and preserves newer user edits." },
+	{ action: "Reservation acquired", effect: "read-only", pathHelper: "resolveDatabasePathModel", safetyGate: "ReservationManager combo lock", notes: "Records an active operation before Notion or vault writes begin." },
+	{ action: "Reservation released", effect: "read-only", pathHelper: "active reservation id", safetyGate: "ReservationManager release", notes: "Clears active operation state after the worker settles." },
+	{ action: "Reservation rejected (key conflict)", effect: "read-only", pathHelper: "Notion database id + resolved folder", safetyGate: "ReservationManager combo lock", notes: "Manual operations fail fast when DB or folder is busy." },
+	{ action: "Reservation queued (batch op)", effect: "read-only", pathHelper: "Notion database id + resolved folder", safetyGate: "ReservationManager queue depth", notes: "Batch operations queue per entry up to the configured depth." },
+	{ action: "Push intent recorded", effect: "vault-write", pathHelper: "push-intents.jsonl", safetyGate: "atomic temp write", notes: "Records create-before-frontmatter phases for crash recovery." },
+	{ action: "Push intent recovered (startup)", effect: "vault-write", pathHelper: "push-intents.jsonl", safetyGate: "startup recovery scan", notes: "Surfaces created-but-uncommitted push intents for operator recovery." },
+	{ action: "Atomic write committed", effect: "vault-write", pathHelper: "atomic-vault-write", safetyGate: "temp write + rename or verified fallback", notes: "All vault content writes route through the atomic helper." },
 ];

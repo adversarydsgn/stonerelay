@@ -13,6 +13,7 @@ import { convertRichText } from "./block-converter";
 import { writeDatabaseEntry } from "./page-writer";
 import { FrozenDatabase } from "./freeze-modal";
 import { buildBaseFile, inferDefaultViews } from "./view-inference";
+import { modifyAtomic, writeAtomic } from "./atomic-vault-write";
 
 export async function freshDatabaseImport(
 	app: App,
@@ -160,7 +161,7 @@ export async function refreshDatabase(
 
 	// Diff pass
 	onProgress?.({ phase: "diffing" });
-	const localFiles = scanLocalFiles(app, db.folderPath);
+	const localFiles = await scanLocalFiles(app, db.folderPath, db.databaseId);
 
 	const staleEntries: PageObjectResponse[] = [];
 	let skippedCount = 0;
@@ -168,7 +169,7 @@ export async function refreshDatabase(
 
 	for (const entry of entries) {
 		processedIds.add(entry.id);
-		const localFile = localFiles.get(entry.id);
+		const localFile = localFiles.files.get(entry.id) ?? localFiles.legacyFiles.get(entry.id);
 
 		if (!localFile) {
 			// New row — not in local vault
@@ -195,6 +196,8 @@ export async function refreshDatabase(
 	let updated = 0;
 	let failed = 0;
 	const errors: string[] = [];
+	const warnings: string[] = [...localFiles.duplicateWarnings];
+	let backfilled = 0;
 
 	let current = 0;
 	let skippingUntilCursor = Boolean(options.startAfterRowId);
@@ -211,17 +214,25 @@ export async function refreshDatabase(
 		onProgress?.({ phase: "importing", current, total: staleEntries.length });
 
 		try {
-			const localFile = localFiles.get(entry.id);
-			if (options.bidirectional && localFile) {
+			const localFile = localFiles.files.get(entry.id);
+			const legacyFile = localFiles.legacyFiles.get(entry.id);
+			if (!localFile && legacyFile) {
+				await backfillNotionDatabaseId(app, legacyFile, db.databaseId);
+				localFiles.files.set(entry.id, legacyFile);
+				localFiles.legacyFiles.delete(entry.id);
+				backfilled++;
+			}
+			const effectiveLocalFile = localFiles.files.get(entry.id);
+			if (options.bidirectional && effectiveLocalFile) {
 				const decision = decideBidirectionalAction({
 					rowId: entry.id,
 					notionChanged: true,
-					vaultChanged: vaultChangedSince(localFile, options.bidirectional.lastSyncedAt),
+					vaultChanged: vaultChangedSince(effectiveLocalFile, options.bidirectional.lastSyncedAt),
 					sourceOfTruth: options.bidirectional.sourceOfTruth,
 					notionEditedAt: entry.last_edited_time,
-					vaultEditedAt: new Date(localFile.stat.mtime).toISOString(),
+					vaultEditedAt: new Date(effectiveLocalFile.stat.mtime).toISOString(),
 					notionSnapshot: snapshotNotionPage(entry),
-					vaultSnapshot: snapshotVaultFile(app, localFile),
+					vaultSnapshot: snapshotVaultFile(app, effectiveLocalFile),
 					detectedAt: new Date().toISOString(),
 				});
 				if (decision.action === "skip") {
@@ -267,10 +278,16 @@ export async function refreshDatabase(
 
 	// Handle deletions: entries in local but not in query
 	let deleted = 0;
-	for (const [id, file] of localFiles) {
+	for (const [id, file] of localFiles.files) {
 		if (!processedIds.has(id)) {
-			await markAsDeleted(app, file);
-			deleted++;
+			try {
+				await markAsDeleted(app, file);
+				deleted++;
+			} catch (err) {
+				failed++;
+				const msg = `Entry ${id}: ${err instanceof Error ? err.message : String(err)}`;
+				errors.push(msg);
+			}
 		}
 	}
 
@@ -286,6 +303,8 @@ export async function refreshDatabase(
 		deleted,
 		failed,
 		errors,
+		warnings,
+		backfilled,
 	};
 }
 
@@ -351,24 +370,45 @@ async function queryAllEntries(
 	return entries;
 }
 
-function scanLocalFiles(
-	app: App,
-	folderPath: string
-): Map<string, TFile> {
-	const map = new Map<string, TFile>();
-	const folder = app.vault.getAbstractFileByPath(folderPath);
-	if (!(folder instanceof TFolder)) return map;
+export interface LocalFileScanResult {
+	files: Map<string, TFile>;
+	legacyFiles: Map<string, TFile>;
+	duplicateWarnings: string[];
+}
 
-	for (const child of folder.children) {
-		if (!(child instanceof TFile) || child.extension !== "md") continue;
+export async function scanLocalFiles(
+	app: App,
+	folderPath: string,
+	databaseId: string
+): Promise<LocalFileScanResult> {
+	const map = new Map<string, TFile>();
+	const legacyFiles = new Map<string, TFile>();
+	const duplicates = new Map<string, TFile[]>();
+	const folder = app.vault.getAbstractFileByPath(folderPath);
+	if (!(folder instanceof TFolder)) return { files: map, legacyFiles, duplicateWarnings: [] };
+
+	for (const child of app.vault.getMarkdownFiles()) {
+		if (!pathInsideFolder(child.path, folderPath)) continue;
 		const cache = app.metadataCache.getFileCache(child);
 		const notionId = cache?.frontmatter?.["notion-id"];
-		if (notionId) {
-			map.set(notionId, child);
+		if (!notionId) continue;
+		const notionDatabaseId = cache?.frontmatter?.["notion-database-id"];
+		if (notionDatabaseId && String(notionDatabaseId).replace(/-/g, "").toLowerCase() !== databaseId.replace(/-/g, "").toLowerCase()) continue;
+		const target = notionDatabaseId ? map : legacyFiles;
+		if (target.has(notionId)) {
+			duplicates.set(notionId, [...(duplicates.get(notionId) ?? [target.get(notionId)!]), child]);
+			continue;
 		}
+		target.set(notionId, child);
 	}
 
-	return map;
+	return {
+		files: map,
+		legacyFiles,
+		duplicateWarnings: [...duplicates.entries()].map(([id, files]) =>
+			`DB has ${files.length} local files claiming notion-id ${id}: ${files.map((file) => file.path).join(", ")}. Pull updated only ${files[0].path}.`
+		),
+	};
 }
 
 async function markAsDeleted(app: App, file: TFile): Promise<void> {
@@ -383,14 +423,27 @@ async function markAsDeleted(app: App, file: TFile): Promise<void> {
 		if (endIdx !== -1) {
 			const before = content.slice(0, endIdx);
 			const after = content.slice(endIdx);
-			await app.vault.modify(file, before + "\nnotion-deleted: true" + after);
+			await modifyAtomic(app.vault, file, before + "\nnotion-deleted: true" + after);
 			return;
 		}
 	}
 
 	// No frontmatter found, add it
 	const fm = "---\nnotion-deleted: true\n---\n";
-	await app.vault.modify(file, fm + content);
+	await modifyAtomic(app.vault, file, fm + content);
+}
+
+async function backfillNotionDatabaseId(app: App, file: TFile, databaseId: string): Promise<void> {
+	const content = await app.vault.read(file);
+	if (content.includes("notion-database-id:")) return;
+	if (content.startsWith("---\n")) {
+		const endIdx = content.indexOf("\n---", 3);
+		if (endIdx !== -1) {
+			await modifyAtomic(app.vault, file, `${content.slice(0, endIdx)}\nnotion-database-id: ${databaseId}${content.slice(endIdx)}`);
+			return;
+		}
+	}
+	await modifyAtomic(app.vault, file, `---\nnotion-database-id: ${databaseId}\n---\n${content}`);
 }
 
 async function generateBaseFile(
@@ -427,10 +480,15 @@ async function generateBaseFile(
 	});
 
 	if (existingFile instanceof TFile) {
-		await app.vault.modify(existingFile, baseContent);
+		await modifyAtomic(app.vault, existingFile, baseContent);
 	} else {
-		await app.vault.create(basePath, baseContent);
+		await writeAtomic(app.vault, basePath, baseContent);
 	}
+}
+
+function pathInsideFolder(path: string, folderPath: string): boolean {
+	const folder = normalizePath(folderPath).replace(/\/+$/, "");
+	return path === folder || path.startsWith(`${folder}/`);
 }
 
 function isUserEditedBaseFile(file: TFile, lastSyncedAt?: string | null): boolean {

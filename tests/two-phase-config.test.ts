@@ -66,7 +66,7 @@ describe("phase transitions", () => {
 			} as never],
 		});
 
-		expect(migrated.schemaVersion).toBe(5);
+		expect(migrated.schemaVersion).toBe(6);
 		expect(migrated.databases[0]).toMatchObject({
 			current_phase: "phase_2",
 			initial_seed_direction: "push",

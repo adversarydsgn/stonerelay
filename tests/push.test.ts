@@ -92,6 +92,11 @@ describe("pushDatabase integration", () => {
 		];
 		const app = {
 			vault: {
+				adapter: {
+					write: vi.fn(async () => undefined),
+					rename: vi.fn(async () => undefined),
+					remove: vi.fn(async () => undefined),
+				},
 				getAbstractFileByPath: vi.fn().mockReturnValue(folder),
 				getMarkdownFiles: vi.fn().mockReturnValue(files.map((entry) => entry.file)),
 				cachedRead: vi.fn(async (tfile: TFile) => files.find((entry) => entry.file === tfile)?.content ?? ""),
@@ -319,6 +324,104 @@ describe("pushDatabase integration", () => {
 			.rejects.toThrow("Push blocked before Notion write");
 		expect(client.pages.update).not.toHaveBeenCalled();
 		expect(client.pages.create).not.toHaveBeenCalled();
+	});
+
+	it("blocks duplicate notion-id files before any Notion write", async () => {
+		const folder = Object.assign(Object.create(TFolder.prototype), { path: "_relay/bugs" });
+		const files = [
+			file("_relay/bugs/one.md", "---\nnotion-id: page-1\nStatus: Done\n---\n# One"),
+			file("_relay/bugs/two.md", "---\nnotion-id: page-1\nStatus: Todo\n---\n# Two"),
+		];
+		const app = {
+			vault: {
+				getAbstractFileByPath: vi.fn().mockReturnValue(folder),
+				getMarkdownFiles: vi.fn().mockReturnValue(files.map((entry) => entry.file)),
+				cachedRead: vi.fn(async (tfile: TFile) => files.find((entry) => entry.file === tfile)?.content ?? ""),
+			},
+		};
+		const client = {
+			databases: {
+				retrieve: vi.fn().mockResolvedValue({
+					title: [richText("Bugs")],
+					data_sources: [{ id: "source-1" }],
+				}),
+			},
+			dataSources: {
+				retrieve: vi.fn().mockResolvedValue({
+					properties: {
+						Name: { type: "title" },
+						Status: { type: "status" },
+					},
+				}),
+				query: vi.fn().mockResolvedValue({ has_more: false, results: [page("page-1", "One")] }),
+			},
+			pages: {
+				update: vi.fn(),
+				create: vi.fn(),
+			},
+		};
+
+		await expect(pushDatabase(app as never, client as never, "db-1", "_relay/bugs"))
+			.rejects.toThrow("duplicate notion-id values");
+		expect(client.pages.update).not.toHaveBeenCalled();
+		expect(client.pages.create).not.toHaveBeenCalled();
+	});
+
+	it("records push intent phases around create-before-frontmatter commits", async () => {
+		const folder = Object.assign(Object.create(TFolder.prototype), { path: "_relay/bugs" });
+		const files = [
+			file("_relay/bugs/new.md", "---\nStatus: Doing\n---\n# New"),
+		];
+		const phases: string[] = [];
+		const app = {
+			vault: {
+				adapter: {
+					write: vi.fn(async () => undefined),
+					rename: vi.fn(async () => undefined),
+					remove: vi.fn(async () => undefined),
+				},
+				getAbstractFileByPath: vi.fn().mockReturnValue(folder),
+				getMarkdownFiles: vi.fn().mockReturnValue(files.map((entry) => entry.file)),
+				cachedRead: vi.fn(async (tfile: TFile) => files.find((entry) => entry.file === tfile)?.content ?? ""),
+			},
+		};
+		const client = {
+			databases: {
+				retrieve: vi.fn().mockResolvedValue({
+					title: [richText("Bugs")],
+					data_sources: [{ id: "source-1" }],
+				}),
+			},
+			dataSources: {
+				retrieve: vi.fn().mockResolvedValue({
+					properties: {
+						Name: { type: "title" },
+						Status: { type: "status" },
+					},
+				}),
+				query: vi.fn().mockResolvedValue({ has_more: false, results: [] }),
+			},
+			pages: {
+				update: vi.fn(),
+				create: vi.fn().mockResolvedValue({ id: "created-page" }),
+			},
+		};
+
+		const result = await pushDatabase(app as never, client as never, "db-1", "_relay/bugs", {
+			onPushIntentCreating: async () => {
+				phases.push("creating");
+				return "intent-1";
+			},
+			onPushIntentCreated: async (_intentId, notionId) => {
+				phases.push(`created:${notionId}`);
+			},
+			onPushIntentCommitted: async () => {
+				phases.push("committed");
+			},
+		});
+
+		expect(result.created).toBe(1);
+		expect(phases).toEqual(["creating", "created:created-page", "committed"]);
 	});
 });
 

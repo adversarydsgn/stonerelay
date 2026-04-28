@@ -90,7 +90,8 @@ describe("settings data migration", () => {
 		expect(migrated.apiKey).toBe("ntn_existing");
 		expect(migrated.defaultOutputFolder).toBe("Notion");
 		expect(migrated.databases).toEqual([]);
-		expect(migrated.schemaVersion).toBe(5);
+		expect(migrated.schemaVersion).toBe(6);
+		expect(migrated.active_reservations).toEqual([]);
 		expect(migrated.pendingConflicts).toEqual([]);
 		expect(migrated.groups).toEqual([]);
 		expect(migrated.pages).toEqual([]);
@@ -111,7 +112,7 @@ describe("settings data migration", () => {
 			groupId: null,
 			autoSync: "inherit",
 		});
-		expect(migrated.schemaVersion).toBe(5);
+		expect(migrated.schemaVersion).toBe(6);
 	});
 
 	it("migrates v0.5 entries to schema 3 without data loss", () => {
@@ -130,7 +131,7 @@ describe("settings data migration", () => {
 			} as SyncedDatabase],
 		});
 
-		expect(migrated.schemaVersion).toBe(5);
+		expect(migrated.schemaVersion).toBe(6);
 		expect(migrated.databases[0]).toMatchObject({
 			id: "db-1",
 			name: "Bugs",
@@ -195,7 +196,7 @@ describe("schema 5 groups, pages, and auto-sync settings", () => {
 	it("migrates v0.8.1 database entries without losing fields", () => {
 		const migrated = migrateData(settings([database({ id: "db-1", autoSync: undefined, groupId: undefined })]));
 
-		expect(migrated.schemaVersion).toBe(5);
+		expect(migrated.schemaVersion).toBe(6);
 		expect(migrated.databases[0]).toMatchObject({
 			id: "db-1",
 			groupId: null,

@@ -2,6 +2,22 @@
 
 Fork-side changes to `stonerelay` (vs. upstream `ran-codes/obsidian-notion-database-sync`).
 
+## v0.9.7 — 2026-04-27
+
+Lifecycle unification, pull safety symmetry, atomic vault writes, and duplicate-id blocking.
+
+**Behavior notes:**
+- Adds an entry-scoped reservation primitive for manual Pull, Push, batch Pull/Push, standalone page writes, fresh imports, refreshes, retries, and conflict-resolution write paths.
+- Push now reserves the database/folder before stale-id preflight, closing the preflight window where a second writer could start before `beginSync`.
+- Sync All and Push All route each database through the same active-operation lifecycle, with batch queueing instead of bypassing the controller model.
+- Adds a push intent log for create-before-frontmatter writes, so interrupted Notion page creates can be surfaced for recovery on startup.
+- Settings data migrates to schema 6 and keeps `active_reservations` as an empty persisted baseline while runtime diagnostics show active operations in memory.
+- Pull safety now blocks overlapping resolved vault folders before Notion queries and filters local scans by both `notion-id` and `notion-database-id`.
+- Pull backfills legacy files that lack `notion-database-id` only when the file's `notion-id` matches a current row in the pulling database.
+- Vault content writes now route through a temp-first atomic helper with rename and verified fallback paths; missing write capability becomes a per-file failure instead of a plugin-load blocker.
+- Push hard-blocks duplicate local `notion-id` values before any Notion write, and Pull surfaces duplicate local-id warnings for operator cleanup.
+- Diagnostics now includes an Active operations table plus duplicate-id and legacy-backfill counters.
+
 ## v0.9.6 — 2026-04-27
 
 Post-incident path model, safety gates, diagnostics, and BRAT status.

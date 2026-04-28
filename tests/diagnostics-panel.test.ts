@@ -43,7 +43,7 @@ function settings(databases: SyncedDatabase[]): NotionFreezeSettings {
 		autoSyncEnabled: false,
 		autoSyncDatabasesByDefault: false,
 		autoSyncPagesByDefault: false,
-		schemaVersion: 5,
+		schemaVersion: 6,
 	};
 }
 
@@ -86,9 +86,13 @@ describe("diagnostics panel rows", () => {
 
 		expect(buildDiagnosticsRows(data, {
 			staleIdCandidateCount: () => 6,
+			duplicateNotionIdCount: () => 2,
+			backfilledFileCount: () => 1,
 		})[0]).toMatchObject({
 			staleIdCandidateCount: 6,
 			staleIdThresholdWarn: true,
+			duplicateNotionIdCount: 2,
+			backfilledFileCount: 1,
 		});
 	});
 });

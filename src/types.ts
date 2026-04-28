@@ -9,6 +9,7 @@ export interface NotionFreezeSettings {
 	pages: PageSyncEntry[];
 	groups: SyncGroup[];
 	pendingConflicts: Conflict[];
+	active_reservations: ActiveReservationState[];
 	autoSyncEnabled: boolean;
 	autoSyncDatabasesByDefault: boolean;
 	autoSyncPagesByDefault: boolean;
@@ -23,10 +24,11 @@ export const DEFAULT_SETTINGS: NotionFreezeSettings = {
 	pages: [],
 	groups: [],
 	pendingConflicts: [],
+	active_reservations: [],
 	autoSyncEnabled: false,
 	autoSyncDatabasesByDefault: false,
 	autoSyncPagesByDefault: false,
-	schemaVersion: 5,
+	schemaVersion: 6,
 };
 
 export type SyncStatus = "ok" | "partial" | "cancelled" | "error" | "interrupted" | "never" | null;
@@ -59,6 +61,16 @@ export interface Conflict {
 	notionSnapshot: Record<string, unknown>;
 	vaultSnapshot: Record<string, unknown>;
 	detectedAt: string;
+}
+
+export interface ActiveReservationState {
+	id: string;
+	entryId: string;
+	entryName: string;
+	databaseId: string;
+	vaultFolder: string;
+	type: string;
+	startedAt: string;
 }
 
 export interface SyncedDatabase {
@@ -142,6 +154,8 @@ export interface DatabaseSyncResult {
 	deleted: number;
 	failed: number;
 	errors: string[];
+	warnings?: string[];
+	backfilled?: number;
 }
 
 export type ProgressPhase =
@@ -166,4 +180,9 @@ export interface SyncRunOptions {
 	};
 	onRowCommitted?: (rowId: string) => void;
 	onRowError?: (error: SyncError) => void;
+	reservationId?: string;
+	onPushIntentCreating?: (vaultPath: string, title: string) => Promise<string>;
+	onPushIntentCreated?: (intentId: string, notionId: string) => Promise<void>;
+	onPushIntentCommitted?: (intentId: string) => Promise<void>;
+	onAtomicWriteCommitted?: (path: string) => void;
 }

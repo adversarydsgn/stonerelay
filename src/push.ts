@@ -9,6 +9,7 @@ import { convertRichText } from "./block-converter";
 import { notionRequest } from "./notion-client";
 import { assertNotCancelled, classifyError, commitRow } from "./sync-state";
 import { evaluateStaleNotionIdSafety, StaleNotionIdSafetyState, validatePushCandidateFiles } from "./sync-safety";
+import { modifyAtomic } from "./atomic-vault-write";
 
 const CHUNK_LIMIT = 1900;
 const INTERNAL_FRONTMATTER_KEYS = new Set([
@@ -142,6 +143,7 @@ export async function pushDatabase(
 				await refreshFrontmatterNotionId(app, doc, getReturnedPageId(page) ?? existingId);
 				updated++;
 			} else {
+				const intentId = await options.onPushIntentCreating?.(doc.file.path, doc.title);
 				const page = await commitRow(doc.file.path, () =>
 					notionRequest(() => client.pages.create({
 						parent: { database_id: databaseId },
@@ -151,7 +153,9 @@ export async function pushDatabase(
 				);
 				const returnedId = getReturnedPageId(page);
 				if (returnedId) {
+					if (intentId) await options.onPushIntentCreated?.(intentId, returnedId);
 					await refreshFrontmatterNotionId(app, doc, returnedId);
+					if (intentId) await options.onPushIntentCommitted?.(intentId);
 				}
 				created++;
 			}
@@ -531,7 +535,7 @@ async function refreshFrontmatterNotionId(
 	if (!notionId || doc.props["notion-id"] === notionId) return;
 	const raw = await app.vault.cachedRead(doc.file);
 	const next = upsertFrontmatterValue(raw, "notion-id", notionId);
-	if (next !== raw) await app.vault.modify(doc.file, next);
+	if (next !== raw) await modifyAtomic(app.vault, doc.file, next);
 	doc.props["notion-id"] = notionId;
 }
 
