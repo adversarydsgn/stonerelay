@@ -2,6 +2,7 @@ import { describe, expect, test, vi } from "vitest";
 import { TFile, TFolder } from "obsidian";
 import { frontmatterValueToNotionPayload, pushDatabase } from "../src/push";
 import { ReservationManager } from "../src/reservations";
+import type { ReservationContext } from "../src/reservations";
 
 describe("timestamp preservation", () => {
 	test("user-set date properties survive Notion → vault → Notion", async () => {
@@ -20,8 +21,8 @@ describe("timestamp preservation", () => {
 			updateResult: page("page-1", "Timestamp Row 1", baselineCreatedTime, "2026-04-25T17:00:00.000Z"),
 		});
 
-		const result = await withTimestampReservation((reservationId) =>
-			pushDatabase(app as never, client as never, "db-1", "_relay/timestamp-test", { reservationId })
+		const result = await withTimestampReservation((context) =>
+			pushDatabase(app as never, client as never, "db-1", "_relay/timestamp-test", { context })
 		);
 
 		expect(client.pages.update).toHaveBeenCalledTimes(1);
@@ -42,8 +43,8 @@ describe("timestamp preservation", () => {
 			updateResult: page("page-1", "Timestamp Row 1", "2026-01-15T12:00:00.000Z", pushedEditedTime),
 		});
 
-		await withTimestampReservation((reservationId) =>
-			pushDatabase(app as never, client as never, "db-1", "_relay/timestamp-test", { reservationId })
+		await withTimestampReservation((context) =>
+			pushDatabase(app as never, client as never, "db-1", "_relay/timestamp-test", { context })
 		);
 
 		const pushedPage = await client.pages.update.mock.results[0].value;
@@ -170,7 +171,7 @@ function richText(content: string) {
 	};
 }
 
-async function withTimestampReservation<T>(task: (reservationId: string) => Promise<T>): Promise<T> {
+async function withTimestampReservation<T>(task: (context: ReservationContext) => Promise<T>): Promise<T> {
 	const manager = new ReservationManager();
 	const reservation = await manager.acquire({
 		entryId: "test-timestamp",
@@ -181,7 +182,7 @@ async function withTimestampReservation<T>(task: (reservationId: string) => Prom
 		policy: "manual",
 	});
 	try {
-		return await task(reservation.id);
+		return await task(reservation.context);
 	} finally {
 		reservation.release();
 	}

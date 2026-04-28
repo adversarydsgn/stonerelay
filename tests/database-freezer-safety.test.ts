@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { TFile, TFolder } from "obsidian";
 import { refreshDatabase, scanLocalFiles } from "../src/database-freezer";
 import { ReservationManager } from "../src/reservations";
+import type { ReservationContext } from "../src/reservations";
 
 describe("pull safety scan and backfill", () => {
 	it("isolates deletion candidates by notion-id plus notion-database-id", async () => {
@@ -34,12 +35,12 @@ describe("pull safety scan and backfill", () => {
 		const adapter = app.vault.adapter;
 		const client = notionClient([page("row-a", "Legacy")]);
 
-		const result = await withPullReservation((reservationId) => refreshDatabase(app as never, client as never, {
+		const result = await withPullReservation((context) => refreshDatabase(app as never, client as never, {
 			databaseId: "db-a",
 			title: "A",
 			folderPath: "_relay/A",
 			entryCount: 1,
-		}, undefined, undefined, { reservationId }));
+		}, undefined, undefined, { context }));
 
 		expect(result.backfilled).toBe(1);
 		expect([...adapter.files.values()].join("\n")).toContain("notion-database-id: db-a");
@@ -55,12 +56,12 @@ describe("pull safety scan and backfill", () => {
 		const adapter = app.vault.adapter;
 		const client = notionClient([page("row-a", "Legacy")]);
 
-		const result = await withPullReservation((reservationId) => refreshDatabase(app as never, client as never, {
+		const result = await withPullReservation((context) => refreshDatabase(app as never, client as never, {
 			databaseId: "db-a",
 			title: "A",
 			folderPath: "_relay/A",
 			entryCount: 1,
-		}, undefined, undefined, { reservationId }));
+		}, undefined, undefined, { context }));
 
 		expect(result.backfilled).toBe(1);
 		expect(result.updated).toBe(0);
@@ -77,12 +78,12 @@ describe("pull safety scan and backfill", () => {
 		});
 		const client = notionClient([page("row-a", "Legacy")]);
 
-		const result = await withPullReservation((reservationId) => refreshDatabase(app as never, client as never, {
+		const result = await withPullReservation((context) => refreshDatabase(app as never, client as never, {
 			databaseId: "db-a",
 			title: "A",
 			folderPath: "_relay/A",
 			entryCount: 0,
-		}, undefined, undefined, { reservationId }));
+		}, undefined, undefined, { context }));
 
 		expect(result.failed).toBe(1);
 		expect(result.errors[0]).toContain("Base file");
@@ -96,13 +97,13 @@ describe("pull safety scan and backfill", () => {
 		const client = notionClient([page("row-a", "Legacy")]);
 		const events: string[] = [];
 
-		const result = await withPullReservation((reservationId) => refreshDatabase(app as never, client as never, {
+		const result = await withPullReservation((context) => refreshDatabase(app as never, client as never, {
 			databaseId: "db-a",
 			title: "A",
 			folderPath: "_relay/A",
 			entryCount: 0,
 		}, undefined, undefined, {
-			reservationId,
+			context,
 			onAtomicWriteCommitted: (path) => events.push(path),
 		}));
 
@@ -217,7 +218,7 @@ function richText(content: string) {
 	};
 }
 
-async function withPullReservation<T>(task: (reservationId: string) => Promise<T>): Promise<T> {
+async function withPullReservation<T>(task: (context: ReservationContext) => Promise<T>): Promise<T> {
 	const manager = new ReservationManager();
 	const reservation = await manager.acquire({
 		entryId: "test-pull",
@@ -228,7 +229,7 @@ async function withPullReservation<T>(task: (reservationId: string) => Promise<T
 		policy: "manual",
 	});
 	try {
-		return await task(reservation.id);
+		return await task(reservation.context);
 	} finally {
 		reservation.release();
 	}

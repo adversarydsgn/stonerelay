@@ -2,6 +2,16 @@
 
 Fork-side changes to `stonerelay` (vs. upstream `ran-codes/obsidian-notion-database-sync`).
 
+## v0.9.10 — 2026-04-28
+
+Branded reservation context and vault-canonical ID bootstrap release.
+
+**Behavior notes:**
+- Replaces writer-helper `reservationId` options with opaque `ReservationContext` handles issued by `ReservationManager`, while production configured entrypoints now reject synthetic contexts that are not active in the live manager.
+- Adds production-boundary and type-boundary coverage for bare-string reservation regressions without changing the separate per-path fallback lock domain used by atomic vault-write fallback.
+- Adds an operator-invoked `scripts/migrate-vault-canonical-ids.ts` bootstrap migration that reads DEC, LOOP, FRIC, and SES max Notion `unique_id` values and plans or seeds vault `.next-id` plus `.next-id.lock` files with atomic writes.
+- Adds dry-run and idempotency coverage for the migration path, including missing-folder handling and check-mode no-write behavior.
+
 ## v0.9.9 — 2026-04-28
 
 Audit-fix amendment release for the v0.9.7 lifecycle and safety boundary.

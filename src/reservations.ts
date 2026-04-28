@@ -5,6 +5,13 @@ export type ReservationOperationType = "pull" | "push" | "page" | "conflict" | "
 export const RESERVATION_MANAGER_LOCK_KIND = "reservation-manager";
 export const RESERVATION_PATH_LOCK_KIND = "reservation-path-lock";
 
+declare const ReservationContextBrand: unique symbol;
+
+export type ReservationContext = {
+	readonly id: string;
+	readonly [ReservationContextBrand]: true;
+};
+
 export interface ReservationAcquireInput {
 	entryId: string;
 	entryName: string;
@@ -28,6 +35,7 @@ export interface ActiveReservationSnapshot {
 
 export interface ReservationHandle extends ActiveReservationSnapshot {
 	lockKind: typeof RESERVATION_MANAGER_LOCK_KIND;
+	context: ReservationContext;
 	controller: AbortController;
 	signal: AbortSignal;
 	release: () => void;
@@ -41,6 +49,7 @@ interface QueuedReservation {
 }
 
 interface ReservationRecord extends ActiveReservationSnapshot {
+	context: ReservationContext;
 	controller: AbortController;
 	release: () => void;
 }
@@ -75,6 +84,7 @@ export class ReservationPathLock {
 export class ReservationManager {
 	private active = new Map<string, ReservationRecord>();
 	private queued: QueuedReservation[] = [];
+	private issuedContexts = new WeakSet<ReservationContext>();
 
 	async acquire(input: ReservationAcquireInput): Promise<ReservationHandle> {
 		const conflict = this.findConflict(input);
@@ -143,6 +153,10 @@ export class ReservationManager {
 		return this.active.has(reservationId);
 	}
 
+	hasReservationContext(context: ReservationContext | undefined): boolean {
+		return Boolean(context && this.issuedContexts.has(context) && this.active.has(context.id));
+	}
+
 	size(): number {
 		return this.active.size;
 	}
@@ -171,11 +185,14 @@ export class ReservationManager {
 			if (!this.active.delete(id)) return;
 			this.drainQueue();
 		};
-		const record: ReservationRecord = { ...snapshot, controller, release };
+		const context = createReservationContext(id);
+		this.issuedContexts.add(context);
+		const record: ReservationRecord = { ...snapshot, context, controller, release };
 		this.active.set(id, record);
 		return {
 			...snapshot,
 			lockKind: RESERVATION_MANAGER_LOCK_KIND,
+			context,
 			controller,
 			signal: controller.signal,
 			release,
@@ -207,6 +224,10 @@ export class ReservationManager {
 		if (leftDb && rightDb && leftDb === rightDb) return true;
 		return foldersOverlap(left.vaultFolder, right.vaultFolder);
 	}
+}
+
+function createReservationContext(id: string): ReservationContext {
+	return Object.freeze({ id }) as ReservationContext;
 }
 
 const fileLocks = new Map<string, Promise<void>>();

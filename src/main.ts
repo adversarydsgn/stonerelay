@@ -14,6 +14,7 @@ import { parseNotionPageId } from "./settings-ux";
 import { isSafeVaultRelativePath, resolveDatabasePathModel } from "./path-model";
 import { confirmStaleNotionIdSafety, evaluatePullSafety, evaluatePushSafety, retryDirectionForErrors, StaleNotionIdSafetyState } from "./sync-safety";
 import { ReservationHandle, ReservationManager, ReservationOperationType, ReservationPolicy, ReservationRejectedError } from "./reservations";
+import type { ReservationContext } from "./reservations";
 import { appendIntentRecord, PushIntentLog, PushIntentRecovery, recoverPushIntents } from "./push-intents";
 import { modifyAtomic } from "./atomic-vault-write";
 
@@ -489,7 +490,7 @@ export default class NotionFreezePlugin extends Plugin {
 		try {
 			const result = await importStandalonePage(this.app, client, pageId, folder, {
 				signal: reservation.signal,
-				reservationId: reservation.id,
+				context: reservation.context,
 				onAtomicWriteCommitted: (path) => this.recordAtomicWriteCommitted(path, reservation.id),
 			});
 			const now = new Date().toISOString();
@@ -551,7 +552,7 @@ export default class NotionFreezePlugin extends Plugin {
 			const client = createNotionClient(this.settings.apiKey);
 			const result = await refreshStandalonePage(this.app, client, entry, {
 				signal: reservation.signal,
-				reservationId: reservation.id,
+				context: reservation.context,
 				onAtomicWriteCommitted: (path) => this.recordAtomicWriteCommitted(path, reservation.id),
 			});
 			const now = new Date().toISOString();
@@ -604,7 +605,7 @@ export default class NotionFreezePlugin extends Plugin {
 		outputFolder: string,
 		options: SyncRunOptions = {}
 	): Promise<DatabaseSyncResult> {
-		this.requireActiveReservation(options.reservationId, "configured database pull");
+		this.requireActiveReservation(options.context, "configured database pull");
 		return this.syncDatabase(entry.databaseId, outputFolder, entry.lastSyncedAt, entry, {
 			...options,
 			bidirectional: entry.direction === "bidirectional" && !options.retryRowIds
@@ -628,7 +629,7 @@ export default class NotionFreezePlugin extends Plugin {
 		sourceFolder: string,
 		options: SyncRunOptions = {}
 	): Promise<DatabaseSyncResult> {
-		this.requireActiveReservation(options.reservationId, "configured database push");
+		this.requireActiveReservation(options.context, "configured database push");
 		if (!this.settings.apiKey) {
 			new Notice("Notion API key not set. Configure in plugin settings.");
 			throw new Error("Notion API key not set.");
@@ -636,7 +637,7 @@ export default class NotionFreezePlugin extends Plugin {
 
 		const client = createNotionClient(this.settings.apiKey);
 		const notice = new Notice(`Pushing "${entry.name}" to Notion...`, 0);
-		const pushIntentLogger = options.reservationId ? this.createPushIntentLogger(options.reservationId) : null;
+		const pushIntentLogger = options.context ? this.createPushIntentLogger(options.context.id) : null;
 		try {
 			const result = await pushDatabase(
 				this.app,
@@ -676,7 +677,7 @@ export default class NotionFreezePlugin extends Plugin {
 			const activeReservation = reservation;
 			const result = await this.syncDatabase(databaseId, outputFolder, undefined, undefined, {
 				signal: activeReservation.signal,
-				reservationId: activeReservation.id,
+				context: activeReservation.context,
 				onAtomicWriteCommitted: (path) => this.recordAtomicWriteCommitted(path, activeReservation.id),
 			});
 			new Notice(formatDatabaseResult(result.title, result, "imported"));
@@ -704,7 +705,7 @@ export default class NotionFreezePlugin extends Plugin {
 			const activeReservation = reservation;
 			const result = await this.refreshFrozenDatabase(db, undefined, {
 				signal: activeReservation.signal,
-				reservationId: activeReservation.id,
+				context: activeReservation.context,
 				onAtomicWriteCommitted: (path) => this.recordAtomicWriteCommitted(path, activeReservation.id),
 			});
 			new Notice(formatDatabaseResult(result.title, result, "re-synced"));
@@ -725,7 +726,7 @@ export default class NotionFreezePlugin extends Plugin {
 		entry?: SyncedDatabase,
 		options: SyncRunOptions = {}
 	): Promise<DatabaseSyncResult> {
-		this.requireActiveReservation(options.reservationId, "database sync");
+		this.requireActiveReservation(options.context, "database sync");
 		if (!this.settings.apiKey) {
 			new Notice("Notion API key not set. Configure in plugin settings.");
 			throw new Error("Notion API key not set.");
@@ -778,7 +779,7 @@ export default class NotionFreezePlugin extends Plugin {
 		lastSyncedAt?: string | null,
 		options: SyncRunOptions = {}
 	): Promise<DatabaseSyncResult> {
-		this.requireActiveReservation(options.reservationId, "frozen database refresh");
+		this.requireActiveReservation(options.context, "frozen database refresh");
 		if (!this.settings.apiKey) {
 			new Notice("Notion API key not set. Configure in plugin settings.");
 			throw new Error("Notion API key not set.");
@@ -905,7 +906,7 @@ export default class NotionFreezePlugin extends Plugin {
 				onRowError: (error) => {
 					errors.push(error);
 				},
-				reservationId: reservation.id,
+				context: reservation.context,
 				onAtomicWriteCommitted: (path) => this.recordAtomicWriteCommitted(path, reservation.id),
 			},
 		};
@@ -970,9 +971,9 @@ export default class NotionFreezePlugin extends Plugin {
 		});
 	}
 
-	private createPushIntentLogger(reservationId: string): PushIntentLog {
+	private createPushIntentLogger(contextId: string): PushIntentLog {
 		const adapter = this.app.vault.adapter as PluginDataAdapter;
-		return new PushIntentLog(adapter, `.obsidian/plugins/${this.manifest.id}/push-intents.jsonl`, reservationId);
+		return new PushIntentLog(adapter, `.obsidian/plugins/${this.manifest.id}/push-intents.jsonl`, contextId);
 	}
 
 	private async recoverPushIntentLog(): Promise<void> {
@@ -1102,8 +1103,8 @@ export default class NotionFreezePlugin extends Plugin {
 		throw err;
 	}
 
-	private requireActiveReservation(reservationId: string | undefined, writer: string): void {
-		if (!reservationId || !this.reservations.hasReservation(reservationId)) {
+	private requireActiveReservation(context: ReservationContext | undefined, writer: string): void {
+		if (!this.reservations.hasReservationContext(context)) {
 			throw new Error(`Reservation required before ${writer}.`);
 		}
 	}

@@ -5,6 +5,7 @@ import { App, normalizePath, TFile } from "obsidian";
 import { PageWriteOptions, PageWriteResult, StandalonePageWriteOptions } from "./types";
 import { convertBlocksToMarkdown, convertRichText, fetchAllChildren } from "./block-converter";
 import { modifyAtomic, writeAtomic } from "./atomic-vault-write";
+import type { ReservationContext } from "./reservations";
 
 const MAX_FILENAME_STEM_BYTES = 180;
 
@@ -13,7 +14,7 @@ export async function writeDatabaseEntry(
 	options: PageWriteOptions
 ): Promise<PageWriteResult> {
 	const { client, page, outputFolder, databaseId } = options;
-	requireReservation(options.reservationId, "database entry write");
+	requireReservation(options.context, "database entry write");
 
 	const title = getPageTitle(page);
 	const safeName = safeFileNameForPage(title || "Untitled", page.id);
@@ -57,7 +58,7 @@ export async function writeStandalonePage(
 	options: StandalonePageWriteOptions
 ): Promise<PageWriteResult> {
 	const { client, page, outputFolder } = options;
-	requireReservation(options.reservationId, "standalone page write");
+	requireReservation(options.context, "standalone page write");
 	const title = getStandalonePageTitle(page);
 	const safeName = safeFileNameForPage(title || "Untitled", page.id);
 	const filePath = normalizePath(`${outputFolder}/${safeName}.md`);
@@ -87,8 +88,8 @@ export async function writeStandalonePage(
 	return { status: "created", filePath, title: safeName };
 }
 
-function requireReservation(reservationId: string | undefined, writer: string): void {
-	if (!reservationId) {
+function requireReservation(context: ReservationContext | undefined, writer: string): void {
+	if (!context?.id) {
 		throw new Error(`Reservation required before ${writer}.`);
 	}
 }

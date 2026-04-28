@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ReservationCancelledError, ReservationManager, ReservationRejectedError } from "../src/reservations";
+import { createTestReservationContext } from "./test-reservation-context";
 
 describe("reservation primitive", () => {
 	it("serializes concurrent pull and push on the same database id", async () => {
@@ -55,6 +56,23 @@ describe("reservation primitive", () => {
 		});
 		expect(manager.snapshots()[0].startedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
 		active.release();
+	});
+
+	it("returns an active opaque context and invalidates it on release", async () => {
+		const manager = new ReservationManager();
+		const active = await manager.acquire(input({ entryId: "db-1", type: "push", policy: "manual" }));
+
+		expect(active.context.id).toBe(active.id);
+		expect(manager.hasReservationContext(active.context)).toBe(true);
+		active.release();
+		expect(manager.hasReservationContext(active.context)).toBe(false);
+	});
+
+	it("keeps synthetic contexts isolated to tests", () => {
+		const context = createTestReservationContext("test-context");
+
+		expect(context.id).toBe("test-context");
+		expect(new ReservationManager().hasReservationContext(context)).toBe(false);
 	});
 });
 

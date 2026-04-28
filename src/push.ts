@@ -10,6 +10,7 @@ import { notionRequest } from "./notion-client";
 import { assertNotCancelled, classifyError, commitRow } from "./sync-state";
 import { evaluateStaleNotionIdSafety, StaleNotionIdSafetyState, validatePushCandidateFiles } from "./sync-safety";
 import { modifyAtomic } from "./atomic-vault-write";
+import type { ReservationContext } from "./reservations";
 
 const CHUNK_LIMIT = 1900;
 const INTERNAL_FRONTMATTER_KEYS = new Set([
@@ -66,7 +67,7 @@ export async function pushDatabase(
 	sourceFolder: string,
 	options: SyncRunOptions = {}
 ): Promise<DatabaseSyncResult> {
-	requireReservation(options.reservationId, "database push");
+	requireReservation(options.context, "database push");
 	const database = (await notionRequest(() =>
 		client.databases.retrieve({ database_id: databaseId })
 	)) as DatabaseObjectResponse;
@@ -541,8 +542,8 @@ async function refreshFrontmatterNotionId(
 	doc.props["notion-id"] = notionId;
 }
 
-function requireReservation(reservationId: string | undefined, writer: string): void {
-	if (!reservationId) {
+function requireReservation(context: ReservationContext | undefined, writer: string): void {
+	if (!context?.id) {
 		throw new Error(`Reservation required before ${writer}.`);
 	}
 }

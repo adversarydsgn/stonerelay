@@ -14,6 +14,7 @@ import { writeDatabaseEntry } from "./page-writer";
 import { FrozenDatabase } from "./freeze-modal";
 import { buildBaseFile, inferDefaultViews } from "./view-inference";
 import { modifyAtomic, writeAtomic } from "./atomic-vault-write";
+import type { ReservationContext } from "./reservations";
 
 export async function freshDatabaseImport(
 	app: App,
@@ -23,7 +24,7 @@ export async function freshDatabaseImport(
 	onProgress?: ProgressCallback,
 	options: SyncRunOptions = {}
 ): Promise<DatabaseSyncResult> {
-	requireReservation(options.reservationId, "fresh database import");
+	requireReservation(options.context, "fresh database import");
 	// Validate database exists
 	const database = (await notionRequest(() =>
 		client.databases.retrieve({ database_id: databaseId })
@@ -106,7 +107,7 @@ export async function freshDatabaseImport(
 					page: entry,
 					outputFolder: folderPath,
 					databaseId,
-					reservationId: options.reservationId,
+					context: options.context,
 					onAtomicWriteCommitted: options.onAtomicWriteCommitted,
 				}),
 				options.onRowCommitted
@@ -152,7 +153,7 @@ export async function refreshDatabase(
 	onProgress?: ProgressCallback,
 	options: SyncRunOptions = {}
 ): Promise<DatabaseSyncResult> {
-	requireReservation(options.reservationId, "database refresh");
+	requireReservation(options.context, "database refresh");
 	// Query fresh metadata
 	onProgress?.({ phase: "querying" });
 
@@ -304,7 +305,7 @@ export async function refreshDatabase(
 					page: entry,
 					outputFolder: db.folderPath,
 					databaseId: db.databaseId,
-					reservationId: options.reservationId,
+					context: options.context,
 					onAtomicWriteCommitted: options.onAtomicWriteCommitted,
 				}),
 				options.onRowCommitted
@@ -543,8 +544,8 @@ function pathInsideFolder(path: string, folderPath: string): boolean {
 	return path === folder || path.startsWith(`${folder}/`);
 }
 
-function requireReservation(reservationId: string | undefined, writer: string): void {
-	if (!reservationId) {
+function requireReservation(context: ReservationContext | undefined, writer: string): void {
+	if (!context?.id) {
 		throw new Error(`Reservation required before ${writer}.`);
 	}
 }

@@ -4,6 +4,7 @@ import { App } from "obsidian";
 import { PageSyncEntry, SyncRunOptions } from "./types";
 import { notionRequest } from "./notion-client";
 import { writeStandalonePage } from "./page-writer";
+import type { ReservationContext } from "./reservations";
 
 export async function fetchStandalonePageMetadata(
 	client: Client,
@@ -23,13 +24,13 @@ export async function importStandalonePage(
 	outputFolder: string,
 	options: SyncRunOptions = {}
 ): Promise<{ filePath: string; title: string; page: PageObjectResponse }> {
-	requireReservation(options.reservationId, "standalone page import");
+	requireReservation(options.context, "standalone page import");
 	const page = await fetchStandalonePageMetadata(client, pageId);
 	const result = await writeStandalonePage(app, {
 		client,
 		page,
 		outputFolder,
-		reservationId: options.reservationId,
+		context: options.context,
 		onAtomicWriteCommitted: options.onAtomicWriteCommitted,
 	});
 	return { filePath: result.filePath, title: result.title, page };
@@ -44,8 +45,8 @@ export async function refreshStandalonePage(
 	return importStandalonePage(app, client, entry.pageId, entry.outputFolder, options);
 }
 
-function requireReservation(reservationId: string | undefined, writer: string): void {
-	if (!reservationId) {
+function requireReservation(context: ReservationContext | undefined, writer: string): void {
+	if (!context?.id) {
 		throw new Error(`Reservation required before ${writer}.`);
 	}
 }

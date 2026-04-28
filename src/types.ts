@@ -1,5 +1,6 @@
 import { Client } from "@notionhq/client";
 import { PageObjectResponse } from "@notionhq/client/build/src/api-endpoints";
+import type { ReservationContext } from "./reservations";
 
 export interface NotionFreezeSettings {
 	apiKey: string;
@@ -130,7 +131,7 @@ export interface PageWriteOptions {
 	page: PageObjectResponse;
 	outputFolder: string;
 	databaseId: string;
-	reservationId?: string;
+	context?: ReservationContext;
 	onAtomicWriteCommitted?: (path: string) => void;
 }
 
@@ -138,7 +139,7 @@ export interface StandalonePageWriteOptions {
 	client: Client;
 	page: PageObjectResponse;
 	outputFolder: string;
-	reservationId?: string;
+	context?: ReservationContext;
 	onAtomicWriteCommitted?: (path: string) => void;
 }
 
@@ -190,7 +191,7 @@ export interface SyncRunOptions {
 	};
 	onRowCommitted?: (rowId: string) => void;
 	onRowError?: (error: SyncError) => void;
-	reservationId?: string;
+	context?: ReservationContext;
 	onPushIntentCreating?: (vaultPath: string, title: string) => Promise<string>;
 	onPushIntentCreated?: (intentId: string, notionId: string) => Promise<void>;
 	onPushIntentCommitted?: (intentId: string) => Promise<void>;
