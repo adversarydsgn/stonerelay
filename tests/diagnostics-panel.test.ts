@@ -1,5 +1,7 @@
-import { describe, expect, it } from "vitest";
-import { buildDiagnosticsRows } from "../src/diagnostics-panel";
+import { describe, expect, it, vi } from "vitest";
+import { TFile } from "obsidian";
+import { buildDiagnosticsRows, renderDiagnosticsPanel } from "../src/diagnostics-panel";
+import { NotionFreezeSettingTab } from "../src/settings";
 import { NotionFreezeSettings, SyncedDatabase } from "../src/types";
 
 const rawId = "0123456789abcdef0123456789abcdef";
@@ -95,4 +97,127 @@ describe("diagnostics panel rows", () => {
 			backfilledFileCount: 1,
 		});
 	});
+
+	it("settings tab wires live diagnostics providers into the rendered panel", () => {
+		const entry = database();
+		const duplicateA = tfile("3. System/Bugs DB/a.md");
+		const duplicateB = tfile("3. System/Bugs DB/b.md");
+		const app = {
+			vault: { getMarkdownFiles: () => [duplicateA, duplicateB] },
+			metadataCache: {
+				getFileCache: () => ({
+					frontmatter: {
+						"notion-id": "page-1",
+						"notion-database-id": rawId,
+					},
+				}),
+			},
+		};
+		const plugin = {
+			settings: settings([entry]),
+			manifest: { version: "0.9.8" },
+			getLastBackfilledFileCount: vi.fn(() => 3),
+			getActiveOperationSnapshots: vi.fn(() => [{
+				id: "reservation-1",
+				entryId: entry.id,
+				entryName: entry.name,
+				databaseId: entry.databaseId,
+				vaultFolder: "3. System/Bugs DB",
+				type: "pull",
+				startedAt: "2026-04-28T10:00:00.000Z",
+			}]),
+			getPushIntentRecoveries: vi.fn(() => [{
+				intentId: "intent-1",
+				vaultPath: "3. System/Bugs DB/new.md",
+				notionId: "page-new",
+				message: "Push recovery needs action",
+			}]),
+			applyPushIntentRecovery: vi.fn(),
+			archivePushIntentRecovery: vi.fn(),
+		};
+		const tab = new NotionFreezeSettingTab(app as never, plugin as never);
+		const root = fakeElement("root");
+
+		(tab as unknown as { renderDiagnostics: (el: HTMLElement) => void }).renderDiagnostics(root as never);
+		const text = flattenText(root).join("\n");
+
+		expect(text).toContain("Active operations");
+		expect(text).toContain("2026-04-28T10:00:00.000Z");
+		expect(text).toContain("Duplicate notion-id files: 1");
+		expect(text).toContain("Backfilled legacy files: 3");
+		expect(text).toContain("Push recovery needs action");
+	});
+
+	it("renders push-intent recovery operator actions", () => {
+		const apply = vi.fn();
+		const archive = vi.fn();
+		const root = fakeElement("root");
+
+		renderDiagnosticsPanel(root as never, settings([database()]), {
+			pushIntentRecoveries: [{
+				intentId: "intent-1",
+				vaultPath: "3. System/Bugs DB/new.md",
+				notionId: "page-new",
+				message: "Push recovery needs action",
+			}],
+			onApplyPushIntentRecovery: apply,
+			onArchivePushIntentRecovery: archive,
+		});
+
+		clickButton(root, "Apply id locally");
+		clickButton(root, "Archive orphan in Notion");
+
+		expect(apply).toHaveBeenCalledWith("intent-1");
+		expect(archive).toHaveBeenCalledWith("intent-1");
+	});
 });
+
+function tfile(path: string): TFile {
+	const name = path.slice(path.lastIndexOf("/") + 1);
+	return Object.assign(Object.create(TFile.prototype), {
+		path,
+		name,
+		basename: name.replace(/\.md$/, ""),
+		extension: "md",
+	});
+}
+
+function fakeElement(tag: string): any {
+	return {
+		tag,
+		textContent: "",
+		children: [] as any[],
+		listeners: new Map<string, () => void>(),
+		createDiv(options?: { cls?: string }) {
+			const child = fakeElement("div");
+			child.cls = options?.cls;
+			this.children.push(child);
+			return child;
+		},
+		createEl(childTag: string, options?: { text?: string; cls?: string }) {
+			const child = fakeElement(childTag);
+			child.textContent = options?.text ?? "";
+			child.cls = options?.cls;
+			this.children.push(child);
+			return child;
+		},
+		addEventListener(event: string, callback: () => void) {
+			this.listeners.set(event, callback);
+		},
+	};
+}
+
+function flattenText(element: any): string[] {
+	return [
+		element.textContent,
+		...element.children.flatMap((child: any) => flattenText(child)),
+	].filter(Boolean);
+}
+
+function clickButton(element: any, text: string): void {
+	if (element.tag === "button" && element.textContent === text) {
+		element.listeners.get("click")?.();
+		return;
+	}
+	for (const child of element.children) clickButton(child, text);
+}

@@ -1,8 +1,8 @@
 import { addIcon, App, Modal, Notice, Plugin, Setting, SuggestModal, normalizePath, TFile, TFolder } from "obsidian";
-import { Conflict, NotionFreezeSettings, DatabaseSyncResult, PageSyncEntry, SyncError, SyncRunOptions, SyncRunType, SyncedDatabase } from "./types";
+import { AtomicWriteEvent, Conflict, NotionFreezeSettings, DatabaseSyncResult, PageSyncEntry, SyncError, SyncRunOptions, SyncRunType, SyncedDatabase } from "./types";
 import { NotionFreezeSettingTab } from "./settings";
 import { FreezeModal, FrozenDatabase } from "./freeze-modal";
-import { createNotionClient, normalizeNotionId } from "./notion-client";
+import { createNotionClient, normalizeNotionId, notionRequest } from "./notion-client";
 import { freshDatabaseImport, refreshDatabase } from "./database-freezer";
 import { migrateData, resolveErrorLogFolder, syncAll, updateDatabase, updatePage } from "./settings-data";
 import { inspectStaleNotionIdSkips, pushDatabase } from "./push";
@@ -14,7 +14,8 @@ import { parseNotionPageId } from "./settings-ux";
 import { isSafeVaultRelativePath, resolveDatabasePathModel } from "./path-model";
 import { confirmStaleNotionIdSafety, evaluatePullSafety, evaluatePushSafety, retryDirectionForErrors, StaleNotionIdSafetyState } from "./sync-safety";
 import { ReservationHandle, ReservationManager, ReservationOperationType, ReservationPolicy, ReservationRejectedError } from "./reservations";
-import { PushIntentLog, PushIntentRecovery, recoverPushIntents } from "./push-intents";
+import { appendIntentRecord, PushIntentLog, PushIntentRecovery, recoverPushIntents } from "./push-intents";
+import { modifyAtomic } from "./atomic-vault-write";
 
 export default class NotionFreezePlugin extends Plugin {
 	settings: NotionFreezeSettings = migrateData(null);
@@ -22,6 +23,8 @@ export default class NotionFreezePlugin extends Plugin {
 	private syncReservations = new Map<string, ReservationHandle>();
 	private reservations = new ReservationManager();
 	private pushIntentRecoveries: PushIntentRecovery[] = [];
+	private lastBackfilledByEntry = new Map<string, number>();
+	private atomicWriteEvents: AtomicWriteEvent[] = [];
 	private cancellingAll = false;
 	private autoSyncQueue = new AutoSyncQueue((job) => this.runAutoSyncJob(job));
 
@@ -154,7 +157,9 @@ export default class NotionFreezePlugin extends Plugin {
 				}).pullTargetFolder;
 				const run = await this.beginSync(entry, "full", undefined, "pull", "batch", folder);
 				try {
-					return await this.syncConfiguredDatabase(entry, outputFolder, run.options);
+					const result = await this.syncConfiguredDatabase(entry, outputFolder, run.options);
+					this.recordBackfilledCount(entry.id, result.backfilled ?? 0);
+					return result;
 				} finally {
 					this.finishSync(entry.id);
 				}
@@ -239,6 +244,7 @@ export default class NotionFreezePlugin extends Plugin {
 				outputFolder,
 				run.options
 			);
+			this.recordBackfilledCount(entry.id, result.backfilled ?? 0);
 			const now = new Date().toISOString();
 			const errors = run.errors.length > 0
 				? run.errors
@@ -259,7 +265,7 @@ export default class NotionFreezePlugin extends Plugin {
 			}
 			await this.saveSettings();
 			(this.app.workspace as any).trigger("stonerelay:settings-updated");
-			new Notice(`Sync complete: ${entry.name}`);
+			new Notice(formatDatabaseResult(result.title, result, "synced"));
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
 			const cancelled = err instanceof SyncCancelled;
@@ -481,32 +487,36 @@ export default class NotionFreezePlugin extends Plugin {
 			policy: "manual",
 		});
 		try {
-		const result = await importStandalonePage(this.app, client, pageId, folder);
-		const now = new Date().toISOString();
-		const existing = this.settings.pages.find((page) => page.pageId === pageId);
-		const nextPage: PageSyncEntry = {
-			id: existing?.id ?? crypto.randomUUID(),
-			type: "page",
-			name: result.title,
-			pageId,
-			outputFolder: folder,
-			errorLogFolder: existing?.errorLogFolder ?? "",
-			groupId: existing?.groupId ?? null,
-			enabled: existing?.enabled ?? true,
-			autoSync: existing?.autoSync ?? "inherit",
-			lastSyncedAt: now,
-			lastSyncStatus: "ok",
-			lastSyncError: undefined,
-			current_sync_id: null,
-			lastFilePath: result.filePath,
-		};
-		this.settings = existing
-			? updatePage(this.settings, nextPage)
-			: { ...this.settings, pages: [...this.settings.pages, nextPage] };
-		await this.saveSettings();
-		(this.app.workspace as any).trigger("stonerelay:settings-updated");
-		new Notice(`Imported page: ${result.title}`);
-		return nextPage;
+			const result = await importStandalonePage(this.app, client, pageId, folder, {
+				signal: reservation.signal,
+				reservationId: reservation.id,
+				onAtomicWriteCommitted: (path) => this.recordAtomicWriteCommitted(path, reservation.id),
+			});
+			const now = new Date().toISOString();
+			const existing = this.settings.pages.find((page) => page.pageId === pageId);
+			const nextPage: PageSyncEntry = {
+				id: existing?.id ?? crypto.randomUUID(),
+				type: "page",
+				name: result.title,
+				pageId,
+				outputFolder: folder,
+				errorLogFolder: existing?.errorLogFolder ?? "",
+				groupId: existing?.groupId ?? null,
+				enabled: existing?.enabled ?? true,
+				autoSync: existing?.autoSync ?? "inherit",
+				lastSyncedAt: now,
+				lastSyncStatus: "ok",
+				lastSyncError: undefined,
+				current_sync_id: null,
+				lastFilePath: result.filePath,
+			};
+			this.settings = existing
+				? updatePage(this.settings, nextPage)
+				: { ...this.settings, pages: [...this.settings.pages, nextPage] };
+			await this.saveSettings();
+			(this.app.workspace as any).trigger("stonerelay:settings-updated");
+			new Notice(`Imported page: ${result.title}`);
+			return nextPage;
 		} finally {
 			reservation.release();
 		}
@@ -539,7 +549,11 @@ export default class NotionFreezePlugin extends Plugin {
 		await this.saveSettings();
 		try {
 			const client = createNotionClient(this.settings.apiKey);
-			const result = await refreshStandalonePage(this.app, client, entry);
+			const result = await refreshStandalonePage(this.app, client, entry, {
+				signal: reservation.signal,
+				reservationId: reservation.id,
+				onAtomicWriteCommitted: (path) => this.recordAtomicWriteCommitted(path, reservation.id),
+			});
 			const now = new Date().toISOString();
 			this.settings = updatePage(this.settings, {
 				...entry,
@@ -590,6 +604,7 @@ export default class NotionFreezePlugin extends Plugin {
 		outputFolder: string,
 		options: SyncRunOptions = {}
 	): Promise<DatabaseSyncResult> {
+		this.requireActiveReservation(options.reservationId, "configured database pull");
 		return this.syncDatabase(entry.databaseId, outputFolder, entry.lastSyncedAt, entry, {
 			...options,
 			bidirectional: entry.direction === "bidirectional" && !options.retryRowIds
@@ -613,6 +628,7 @@ export default class NotionFreezePlugin extends Plugin {
 		sourceFolder: string,
 		options: SyncRunOptions = {}
 	): Promise<DatabaseSyncResult> {
+		this.requireActiveReservation(options.reservationId, "configured database push");
 		if (!this.settings.apiKey) {
 			new Notice("Notion API key not set. Configure in plugin settings.");
 			throw new Error("Notion API key not set.");
@@ -657,7 +673,12 @@ export default class NotionFreezePlugin extends Plugin {
 				type: "pull",
 				policy: "manual",
 			});
-			const result = await this.syncDatabase(databaseId, outputFolder);
+			const activeReservation = reservation;
+			const result = await this.syncDatabase(databaseId, outputFolder, undefined, undefined, {
+				signal: activeReservation.signal,
+				reservationId: activeReservation.id,
+				onAtomicWriteCommitted: (path) => this.recordAtomicWriteCommitted(path, activeReservation.id),
+			});
 			new Notice(formatDatabaseResult(result.title, result, "imported"));
 		} catch (err) {
 			console.error("Notion sync error:", err);
@@ -680,7 +701,12 @@ export default class NotionFreezePlugin extends Plugin {
 				type: "pull",
 				policy: "manual",
 			});
-			const result = await this.refreshFrozenDatabase(db);
+			const activeReservation = reservation;
+			const result = await this.refreshFrozenDatabase(db, undefined, {
+				signal: activeReservation.signal,
+				reservationId: activeReservation.id,
+				onAtomicWriteCommitted: (path) => this.recordAtomicWriteCommitted(path, activeReservation.id),
+			});
 			new Notice(formatDatabaseResult(result.title, result, "re-synced"));
 		} catch (err) {
 			console.error("Notion sync error:", err);
@@ -699,6 +725,7 @@ export default class NotionFreezePlugin extends Plugin {
 		entry?: SyncedDatabase,
 		options: SyncRunOptions = {}
 	): Promise<DatabaseSyncResult> {
+		this.requireActiveReservation(options.reservationId, "database sync");
 		if (!this.settings.apiKey) {
 			new Notice("Notion API key not set. Configure in plugin settings.");
 			throw new Error("Notion API key not set.");
@@ -751,6 +778,7 @@ export default class NotionFreezePlugin extends Plugin {
 		lastSyncedAt?: string | null,
 		options: SyncRunOptions = {}
 	): Promise<DatabaseSyncResult> {
+		this.requireActiveReservation(options.reservationId, "frozen database refresh");
 		if (!this.settings.apiKey) {
 			new Notice("Notion API key not set. Configure in plugin settings.");
 			throw new Error("Notion API key not set.");
@@ -878,6 +906,7 @@ export default class NotionFreezePlugin extends Plugin {
 					errors.push(error);
 				},
 				reservationId: reservation.id,
+				onAtomicWriteCommitted: (path) => this.recordAtomicWriteCommitted(path, reservation.id),
 			},
 		};
 	}
@@ -962,12 +991,140 @@ export default class NotionFreezePlugin extends Plugin {
 		return [...this.pushIntentRecoveries];
 	}
 
+	getLastBackfilledFileCount(entryId: string): number {
+		return this.lastBackfilledByEntry.get(entryId) ?? 0;
+	}
+
+	getAtomicWriteEvents(): AtomicWriteEvent[] {
+		return [...this.atomicWriteEvents];
+	}
+
+	async applyPushIntentRecovery(intentId: string): Promise<void> {
+		const recovery = this.findPushIntentRecovery(intentId);
+		if (!recovery) {
+			new Notice("Push intent recovery is no longer pending.");
+			return;
+		}
+		if (!isSafeVaultRelativePath(recovery.vaultPath)) {
+			new Notice(`Push intent recovery blocked: unsafe vault path ${recovery.vaultPath}.`);
+			return;
+		}
+		const file = this.app.vault.getAbstractFileByPath(recovery.vaultPath);
+		if (!(file instanceof TFile)) {
+			new Notice(`Push intent recovery blocked: local file not found at ${recovery.vaultPath}.`);
+			return;
+		}
+		const reservation = await this.reservations.acquire({
+			entryId: `push-intent:${intentId}`,
+			entryName: recovery.vaultPath,
+			databaseId: recovery.notionId,
+			vaultFolder: file.parent?.path ?? recovery.vaultPath,
+			type: "startup",
+			policy: "manual",
+		});
+		try {
+			const raw = await this.app.vault.cachedRead(file);
+			const next = upsertFrontmatterValue(raw, "notion-id", recovery.notionId);
+			if (next !== raw) {
+				await modifyAtomic(this.app.vault, file, next, {
+					onCommitted: (path) => this.recordAtomicWriteCommitted(path, reservation.id),
+				});
+			}
+			await appendIntentRecord(this.app.vault.adapter as PluginDataAdapter, `.obsidian/plugins/${this.manifest.id}/push-intents.jsonl`, {
+				intent_id: recovery.intentId,
+				reservation_id: reservation.id,
+				vault_path: recovery.vaultPath,
+				title_hash: "",
+				phase: "committed",
+				notion_id: recovery.notionId,
+				completed_at: new Date().toISOString(),
+			});
+			this.removePushIntentRecovery(intentId);
+			new Notice(`Applied recovered Notion id to ${recovery.vaultPath}.`);
+		} catch (err) {
+			new Notice(`Push intent recovery failed: ${errorMessage(err)}`);
+			throw err;
+		} finally {
+			reservation.release();
+			(this.app.workspace as any).trigger("stonerelay:settings-updated");
+		}
+	}
+
+	async archivePushIntentRecovery(intentId: string): Promise<void> {
+		const recovery = this.findPushIntentRecovery(intentId);
+		if (!recovery) {
+			new Notice("Push intent recovery is no longer pending.");
+			return;
+		}
+		if (!this.settings.apiKey) {
+			new Notice("Notion API key not set. Configure in plugin settings before archiving the orphan page.");
+			return;
+		}
+		const reservation = await this.reservations.acquire({
+			entryId: `push-intent:${intentId}`,
+			entryName: recovery.vaultPath,
+			databaseId: recovery.notionId,
+			vaultFolder: parentPath(recovery.vaultPath),
+			type: "startup",
+			policy: "manual",
+		});
+		try {
+			const client = createNotionClient(this.settings.apiKey);
+			await notionRequest(() => client.pages.update({
+				page_id: recovery.notionId,
+				archived: true,
+			} as never));
+			await appendIntentRecord(this.app.vault.adapter as PluginDataAdapter, `.obsidian/plugins/${this.manifest.id}/push-intents.jsonl`, {
+				intent_id: recovery.intentId,
+				reservation_id: reservation.id,
+				vault_path: recovery.vaultPath,
+				title_hash: "",
+				phase: "archived",
+				notion_id: recovery.notionId,
+				completed_at: new Date().toISOString(),
+			});
+			this.removePushIntentRecovery(intentId);
+			new Notice(`Archived orphan Notion page for ${recovery.vaultPath}.`);
+		} catch (err) {
+			new Notice(`Push intent archive failed: ${errorMessage(err)}`);
+			throw err;
+		} finally {
+			reservation.release();
+			(this.app.workspace as any).trigger("stonerelay:settings-updated");
+		}
+	}
+
 	private noticeReservationError(err: unknown): void {
 		if (err instanceof ReservationRejectedError) {
 			new Notice(err.message);
 			return;
 		}
 		throw err;
+	}
+
+	private requireActiveReservation(reservationId: string | undefined, writer: string): void {
+		if (!reservationId || !this.reservations.hasReservation(reservationId)) {
+			throw new Error(`Reservation required before ${writer}.`);
+		}
+	}
+
+	private recordBackfilledCount(entryId: string, count: number): void {
+		this.lastBackfilledByEntry.set(entryId, count);
+	}
+
+	private recordAtomicWriteCommitted(path: string, reservationId?: string): void {
+		this.atomicWriteEvents = [
+			...this.atomicWriteEvents.slice(-49),
+			{ path, reservationId, committedAt: new Date().toISOString() },
+		];
+	}
+
+	private findPushIntentRecovery(intentId: string): PushIntentRecovery | null {
+		return this.pushIntentRecoveries.find((recovery) => recovery.intentId === intentId) ?? null;
+	}
+
+	private removePushIntentRecovery(intentId: string): void {
+		this.pushIntentRecoveries = this.pushIntentRecoveries.filter((recovery) => recovery.intentId !== intentId);
 	}
 
 	private async writeSyncErrorLog(
@@ -1294,6 +1451,38 @@ function formatDatabaseResult(
 		msg += "\nErrors:\n" + result.errors.join("\n");
 	}
 	return msg;
+}
+
+function upsertFrontmatterValue(raw: string, key: string, value: string): string {
+	const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---(\r?\n?[\s\S]*)$/);
+	const escaped = yamlEscapeString(value);
+	if (!match) return `---\n${key}: ${escaped}\n---\n${raw}`;
+
+	const lines = match[1].split(/\r?\n/);
+	const keyPattern = new RegExp(`^("${escapeRegExp(key)}"|${escapeRegExp(key)}):\\s*.*$`);
+	const index = lines.findIndex((line) => keyPattern.test(line));
+	if (index >= 0) {
+		lines[index] = `${key}: ${escaped}`;
+	} else {
+		lines.unshift(`${key}: ${escaped}`);
+	}
+
+	return `---\n${lines.join("\n")}\n---${match[2]}`;
+}
+
+function yamlEscapeString(value: string): string {
+	if (/^[A-Za-z0-9_-]+$/.test(value)) return value;
+	return JSON.stringify(value);
+}
+
+function escapeRegExp(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function parentPath(path: string): string {
+	const normalized = normalizePath(path);
+	const index = normalized.lastIndexOf("/");
+	return index >= 0 ? normalized.slice(0, index) : "";
 }
 
 function folderName(path: string): string {

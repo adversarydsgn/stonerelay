@@ -19,7 +19,7 @@ describe("timestamp preservation", () => {
 			updateResult: page("page-1", "Timestamp Row 1", baselineCreatedTime, "2026-04-25T17:00:00.000Z"),
 		});
 
-		const result = await pushDatabase(app as never, client as never, "db-1", "_relay/timestamp-test");
+		const result = await pushDatabase(app as never, client as never, "db-1", "_relay/timestamp-test", { reservationId: "test-reservation" });
 
 		expect(client.pages.update).toHaveBeenCalledTimes(1);
 		expect(client.pages.create).not.toHaveBeenCalled();
@@ -39,7 +39,7 @@ describe("timestamp preservation", () => {
 			updateResult: page("page-1", "Timestamp Row 1", "2026-01-15T12:00:00.000Z", pushedEditedTime),
 		});
 
-		await pushDatabase(app as never, client as never, "db-1", "_relay/timestamp-test");
+		await pushDatabase(app as never, client as never, "db-1", "_relay/timestamp-test", { reservationId: "test-reservation" });
 
 		const pushedPage = await client.pages.update.mock.results[0].value;
 		expect(Date.parse(pushedPage.last_edited_time)).toBeGreaterThan(Date.parse(baselineEditedTime));

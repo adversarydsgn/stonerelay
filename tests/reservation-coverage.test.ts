@@ -1,6 +1,8 @@
 import { readFileSync } from "fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { USER_ACTION_AUDIT } from "../src/action-audit";
+import { freshDatabaseImport, refreshDatabase } from "../src/database-freezer";
+import { pushDatabase } from "../src/push";
 
 describe("reservation and atomic-write coverage audit", () => {
 	it("documents the writer audit trail for reservation-protected entry points", () => {
@@ -34,6 +36,29 @@ describe("reservation and atomic-write coverage audit", () => {
 		expect(actions).toContain("Push intent recorded");
 		expect(actions).toContain("Push intent recovered (startup)");
 		expect(actions).toContain("Atomic write committed");
+	});
+
+	it("behaviorally blocks direct push helper calls before Notion access without a reservation", async () => {
+		const client = { databases: { retrieve: vi.fn() } };
+
+		await expect(pushDatabase({} as never, client as never, "db-1", "_relay"))
+			.rejects.toThrow("Reservation required before database push");
+		expect(client.databases.retrieve).not.toHaveBeenCalled();
+	});
+
+	it("behaviorally blocks direct pull helper calls before Notion access without a reservation", async () => {
+		const client = { databases: { retrieve: vi.fn() } };
+
+		await expect(freshDatabaseImport({} as never, client as never, "db-1", "_relay"))
+			.rejects.toThrow("Reservation required before fresh database import");
+		await expect(refreshDatabase({} as never, client as never, {
+			databaseId: "db-1",
+			title: "DB",
+			folderPath: "_relay",
+			entryCount: 0,
+		}))
+			.rejects.toThrow("Reservation required before database refresh");
+		expect(client.databases.retrieve).not.toHaveBeenCalled();
 	});
 });
 

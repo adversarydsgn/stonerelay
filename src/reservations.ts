@@ -130,6 +130,10 @@ export class ReservationManager {
 		return [...this.active.values()].some((record) => record.entryId === entryId);
 	}
 
+	hasReservation(reservationId: string): boolean {
+		return this.active.has(reservationId);
+	}
+
 	size(): number {
 		return this.active.size;
 	}
@@ -192,6 +196,25 @@ export class ReservationManager {
 		const rightDb = normalizeReservationDatabaseId(right.databaseId);
 		if (leftDb && rightDb && leftDb === rightDb) return true;
 		return foldersOverlap(left.vaultFolder, right.vaultFolder);
+	}
+}
+
+const fileLocks = new Map<string, Promise<void>>();
+
+export async function withReservationPathLock<T>(path: string, task: () => Promise<T>): Promise<T> {
+	const key = normalizeReservationFolder(path);
+	const previous = fileLocks.get(key) ?? Promise.resolve();
+	let release!: () => void;
+	const current = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	fileLocks.set(key, previous.then(() => current, () => current));
+	await previous.catch(() => undefined);
+	try {
+		return await task();
+	} finally {
+		release();
+		if (fileLocks.get(key) === current) fileLocks.delete(key);
 	}
 }
 

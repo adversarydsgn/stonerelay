@@ -134,7 +134,7 @@ describe("pushDatabase integration", () => {
 			pages: { update, create },
 		};
 
-		const result = await pushDatabase(app as never, client as never, "db-1", "_relay/bugs");
+		const result = await pushDatabase(app as never, client as never, "db-1", "_relay/bugs", { reservationId: "test-reservation" });
 
 		expect(update).toHaveBeenCalledTimes(2);
 		expect(update.mock.calls.map(([arg]) => arg.page_id)).toEqual(["page-1", "page-2"]);
@@ -189,7 +189,7 @@ describe("pushDatabase integration", () => {
 			},
 		};
 
-		const result = await pushDatabase(app as never, client as never, "db-1", "_relay/bugs");
+		const result = await pushDatabase(app as never, client as never, "db-1", "_relay/bugs", { reservationId: "test-reservation" });
 
 		expect(client.pages.create).toHaveBeenCalledTimes(2);
 		expect(result.created).toBe(1);
@@ -232,6 +232,7 @@ describe("pushDatabase integration", () => {
 		};
 
 		const result = await pushDatabase(app as never, client as never, "db-1", "_relay/bugs", {
+			reservationId: "test-reservation",
 			allowStaleNotionIdThresholdProceed: true,
 		});
 
@@ -280,7 +281,7 @@ describe("pushDatabase integration", () => {
 			},
 		};
 
-		await expect(pushDatabase(app as never, client as never, "db-1", "_relay/bugs"))
+		await expect(pushDatabase(app as never, client as never, "db-1", "_relay/bugs", { reservationId: "test-reservation" }))
 			.rejects.toThrow("stale notion-id confirmation required");
 		expect(client.pages.update).not.toHaveBeenCalled();
 		expect(client.pages.create).not.toHaveBeenCalled();
@@ -320,7 +321,7 @@ describe("pushDatabase integration", () => {
 			},
 		};
 
-		await expect(pushDatabase(app as never, client as never, "21b39452dc7b4a159d6b7b229c21cc80", "_relay/bugs"))
+		await expect(pushDatabase(app as never, client as never, "21b39452dc7b4a159d6b7b229c21cc80", "_relay/bugs", { reservationId: "test-reservation" }))
 			.rejects.toThrow("Push blocked before Notion write");
 		expect(client.pages.update).not.toHaveBeenCalled();
 		expect(client.pages.create).not.toHaveBeenCalled();
@@ -361,7 +362,7 @@ describe("pushDatabase integration", () => {
 			},
 		};
 
-		await expect(pushDatabase(app as never, client as never, "db-1", "_relay/bugs"))
+		await expect(pushDatabase(app as never, client as never, "db-1", "_relay/bugs", { reservationId: "test-reservation" }))
 			.rejects.toThrow("duplicate notion-id values");
 		expect(client.pages.update).not.toHaveBeenCalled();
 		expect(client.pages.create).not.toHaveBeenCalled();
@@ -408,6 +409,7 @@ describe("pushDatabase integration", () => {
 		};
 
 		const result = await pushDatabase(app as never, client as never, "db-1", "_relay/bugs", {
+			reservationId: "test-reservation",
 			onPushIntentCreating: async () => {
 				phases.push("creating");
 				return "intent-1";

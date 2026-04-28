@@ -38,10 +38,76 @@ describe("pull safety scan and backfill", () => {
 			title: "A",
 			folderPath: "_relay/A",
 			entryCount: 1,
-		});
+		}, undefined, undefined, { reservationId: "test-reservation" });
 
 		expect(result.backfilled).toBe(1);
 		expect([...adapter.files.values()].join("\n")).toContain("notion-database-id: db-a");
+	});
+
+	it("backfills matching legacy files even when the Notion row is otherwise unchanged", async () => {
+		const legacy = file(
+			"_relay/A/unchanged.md",
+			{ "notion-id": "row-a", "notion-last-edited": "2026-04-27T10:00:00.000Z" },
+			"---\nnotion-id: row-a\nnotion-last-edited: 2026-04-27T10:00:00.000Z\n---\nOld"
+		);
+		const app = appWithFiles([legacy]);
+		const adapter = app.vault.adapter;
+		const client = notionClient([page("row-a", "Legacy")]);
+
+		const result = await refreshDatabase(app as never, client as never, {
+			databaseId: "db-a",
+			title: "A",
+			folderPath: "_relay/A",
+			entryCount: 1,
+		}, undefined, undefined, { reservationId: "test-reservation" });
+
+		expect(result.backfilled).toBe(1);
+		expect(result.updated).toBe(0);
+		expect(result.skipped).toBe(1);
+		expect([...adapter.files.values()].join("\n")).toContain("notion-database-id: db-a");
+	});
+
+	it("reports .base atomic write failure while continuing row writes", async () => {
+		const app = appWithFiles([]);
+		const adapter = app.vault.adapter;
+		adapter.write = vi.fn(async (path: string, data: string) => {
+			if (path.includes(".base.tmp-")) throw new Error("disk full on base");
+			adapter.files.set(path, data);
+		});
+		const client = notionClient([page("row-a", "Legacy")]);
+
+		const result = await refreshDatabase(app as never, client as never, {
+			databaseId: "db-a",
+			title: "A",
+			folderPath: "_relay/A",
+			entryCount: 0,
+		}, undefined, undefined, { reservationId: "test-reservation" });
+
+		expect(result.failed).toBe(1);
+		expect(result.errors[0]).toContain("Base file");
+		expect(result.errors[0]).toContain("disk full on base");
+		expect(result.created).toBe(1);
+		expect([...adapter.files.keys()].some((path) => path.endsWith(".md"))).toBe(true);
+	});
+
+	it("emits atomic-write committed events from production pull writes", async () => {
+		const app = appWithFiles([]);
+		const client = notionClient([page("row-a", "Legacy")]);
+		const events: string[] = [];
+
+		const result = await refreshDatabase(app as never, client as never, {
+			databaseId: "db-a",
+			title: "A",
+			folderPath: "_relay/A",
+			entryCount: 0,
+		}, undefined, undefined, {
+			reservationId: "test-reservation",
+			onAtomicWriteCommitted: (path) => events.push(path),
+		});
+
+		expect(result.created).toBe(1);
+		expect(events.some((path) => path.endsWith(".base"))).toBe(true);
+		expect(events.some((path) => path.endsWith(".md"))).toBe(true);
 	});
 });
 

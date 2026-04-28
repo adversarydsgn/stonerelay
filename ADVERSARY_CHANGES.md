@@ -2,6 +2,20 @@
 
 Fork-side changes to `stonerelay` (vs. upstream `ran-codes/obsidian-notion-database-sync`).
 
+## v0.9.8 — 2026-04-28
+
+Audit-fix release for the v0.9.7 lifecycle and safety substrate.
+
+**Behavior notes:**
+- Push intent recoveries now render in diagnostics with operator actions to apply the recovered Notion id locally or archive the orphan Notion page.
+- Live diagnostics now receive active operation snapshots, duplicate `notion-id` scan counts, legacy backfill counts, and pending push-intent recovery state from the settings tab path.
+- Pull backfills matching legacy `notion-database-id` frontmatter even when the Notion row is otherwise unchanged.
+- Sync All and Push All run per-entry reservation work without blocking unrelated entries behind a queued busy entry, and queued cancellation records a cancelled entry result.
+- `.base` atomic-write failures are isolated as file-level failures so Pull can continue row writes and report the degraded path clearly.
+- Atomic vault content writes now emit runtime committed-write events from production pull, push, standalone page, and recovery write paths.
+- Push intent logging no longer overwrites the live log directly when rename replacement is unavailable; degraded adapters fail before Notion page creation instead of claiming atomicity.
+- A-D acceptance criteria from the v0.9.7 post-release audit are now covered by behavioral tests for reservation enforcement, diagnostics wiring, push-intent recovery actions, batch cancellation, legacy backfill completeness, and atomic degraded paths.
+
 ## v0.9.7 — 2026-04-27
 
 Lifecycle unification, pull safety symmetry, atomic vault writes, and duplicate-id blocking.

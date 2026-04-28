@@ -22,6 +22,7 @@ export interface SyncAllResult {
 	settings: NotionFreezeSettings;
 	ok: number;
 	errored: number;
+	cancelled?: number;
 }
 
 export type SyncDatabaseRunner = (
@@ -265,38 +266,59 @@ export async function syncAll(
 	let nextSettings = settings;
 	let ok = 0;
 	let errored = 0;
+	let cancelled = 0;
 
-	for (const entry of enabled) {
+	const outcomes = await Promise.all(enabled.map(async (entry) => {
 		notice?.(`Syncing ${entry.name}...`);
 		try {
-				const result = await runSync(entry, resolveOutputFolder(nextSettings, entry));
-			ok++;
-			const now = new Date().toISOString();
-			const errors = result
-				? syncErrorObjects(result.errors, mode, now)
-				: [];
-			const status = result && (result.failed > 0 || errors.length > 0) ? "partial" : "ok";
-			nextSettings = updateDatabase(nextSettings, applyPhaseTransition({
-				...entry,
-				lastSyncedAt: now,
-				lastPulledAt: mode === "pull" ? now : entry.lastPulledAt,
-				lastPushedAt: mode === "push" ? now : entry.lastPushedAt,
-				lastSyncStatus: status,
-				lastSyncError: errors.length > 0 ? errors.map((error) => error.error).join("\n").slice(0, 200) : undefined,
-				lastSyncErrors: errors,
-			}, status, errors, "full", now));
+			const result = await runSync(entry, resolveOutputFolder(settings, entry));
+			return { entry, result };
 		} catch (err) {
+			return { entry, error: err };
+		}
+	}));
+
+	for (const outcome of outcomes) {
+		const { entry } = outcome;
+		if ("error" in outcome) {
+			if (isCancelledError(outcome.error)) {
+				cancelled++;
+				nextSettings = updateDatabase(nextSettings, {
+					...entry,
+					lastSyncStatus: "cancelled",
+					lastSyncError: undefined,
+				});
+				continue;
+			}
 			errored++;
 			nextSettings = updateDatabase(nextSettings, {
 				...entry,
 				lastSyncStatus: "error",
-				lastSyncError: errorMessage(err),
+				lastSyncError: errorMessage(outcome.error),
 			});
+			continue;
 		}
+
+		ok++;
+		const now = new Date().toISOString();
+		const result = outcome.result;
+		const errors = result
+			? syncErrorObjects(result.errors, mode, now)
+			: [];
+		const status = result && (result.failed > 0 || errors.length > 0) ? "partial" : "ok";
+		nextSettings = updateDatabase(nextSettings, applyPhaseTransition({
+			...entry,
+			lastSyncedAt: now,
+			lastPulledAt: mode === "pull" ? now : entry.lastPulledAt,
+			lastPushedAt: mode === "push" ? now : entry.lastPushedAt,
+			lastSyncStatus: status,
+			lastSyncError: errors.length > 0 ? errors.map((error) => error.error).join("\n").slice(0, 200) : undefined,
+			lastSyncErrors: errors,
+		}, status, errors, "full", now));
 	}
 
-	notice?.(`Sync complete: ${ok} ok, ${errored} errored.`);
-	return { settings: nextSettings, ok, errored };
+	notice?.(`Sync complete: ${ok} ok, ${errored} errored${cancelled > 0 ? `, ${cancelled} cancelled` : ""}.`);
+	return { settings: nextSettings, ok, errored, cancelled };
 }
 
 export function createDatabaseEntry(entry: Partial<SyncedDatabase>): SyncedDatabase {
@@ -387,6 +409,10 @@ function sourceOfTruthForLegacy(direction: SyncDirection): "notion" | "obsidian"
 
 function errorMessage(err: unknown): string {
 	return (err instanceof Error ? err.message : String(err)).slice(0, 200);
+}
+
+function isCancelledError(err: unknown): boolean {
+	return err instanceof Error && (err.name === "ReservationCancelledError" || err.name === "SyncCancelled");
 }
 
 function syncErrorObjects(messages: string[], mode: SyncMode, timestamp: string): SyncError[] {

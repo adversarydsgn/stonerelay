@@ -1,6 +1,7 @@
 import { NotionFreezeSettings, SyncedDatabase } from "./types";
 import { evaluatePullSafety, evaluatePushSafety } from "./sync-safety";
 import { ActiveReservationSnapshot } from "./reservations";
+import { PushIntentRecovery } from "./push-intents";
 
 export type DiagnosticsReadiness = "PASS" | "WARNING" | "BLOCKED";
 
@@ -28,6 +29,9 @@ export interface DiagnosticsOptions {
 	duplicateNotionIdCount?: (entry: SyncedDatabase) => number;
 	backfilledFileCount?: (entry: SyncedDatabase) => number;
 	activeOperations?: ActiveReservationSnapshot[];
+	pushIntentRecoveries?: PushIntentRecovery[];
+	onApplyPushIntentRecovery?: (intentId: string) => void;
+	onArchivePushIntentRecovery?: (intentId: string) => void;
 }
 
 export function buildDiagnosticsRows(
@@ -74,6 +78,7 @@ export function renderDiagnosticsPanel(
 	panel.createEl("h3", { text: "Diagnostics" });
 	const rows = buildDiagnosticsRows(settings, options);
 	renderActiveOperations(panel, options.activeOperations ?? []);
+	renderPushIntentRecoveries(panel, options);
 	if (rows.length === 0) {
 		panel.createEl("p", {
 			cls: "setting-item-description",
@@ -94,6 +99,26 @@ export function renderDiagnosticsPanel(
 			text: `Stale-ID candidates: ${row.staleIdCandidateCount}${row.staleIdThresholdWarn ? " ⚠" : ""}`,
 		});
 		item.createEl("p", { text: `Backfilled legacy files: ${row.backfilledFileCount}` });
+	}
+}
+
+function renderPushIntentRecoveries(panel: HTMLElement, options: DiagnosticsOptions): void {
+	const recoveries = options.pushIntentRecoveries ?? [];
+	const section = panel.createDiv({ cls: "stonerelay-push-intent-recoveries" });
+	section.createEl("h4", { text: "Push intent recovery" });
+	if (recoveries.length === 0) {
+		section.createEl("p", { cls: "setting-item-description", text: "No pending push intent recoveries." });
+		return;
+	}
+	for (const recovery of recoveries) {
+		const item = section.createDiv({ cls: "stonerelay-push-intent-recovery" });
+		item.createEl("p", { text: recovery.message });
+		const apply = item.createEl("button", { text: "Apply id locally" });
+		apply.type = "button";
+		apply.addEventListener("click", () => options.onApplyPushIntentRecovery?.(recovery.intentId));
+		const archive = item.createEl("button", { text: "Archive orphan in Notion" });
+		archive.type = "button";
+		archive.addEventListener("click", () => options.onArchivePushIntentRecovery?.(recovery.intentId));
 	}
 }
 

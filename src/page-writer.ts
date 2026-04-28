@@ -13,6 +13,7 @@ export async function writeDatabaseEntry(
 	options: PageWriteOptions
 ): Promise<PageWriteResult> {
 	const { client, page, outputFolder, databaseId } = options;
+	requireReservation(options.reservationId, "database entry write");
 
 	const title = getPageTitle(page);
 	const safeName = safeFileNameForPage(title || "Untitled", page.id);
@@ -42,11 +43,11 @@ export async function writeDatabaseEntry(
 	// Write file
 	const existingFile = app.vault.getAbstractFileByPath(filePath);
 	if (existingFile instanceof TFile) {
-		await modifyAtomic(app.vault, existingFile, content);
+		await modifyAtomic(app.vault, existingFile, content, { onCommitted: options.onAtomicWriteCommitted });
 		return { status: "updated", filePath, title: safeName };
 	} else {
 		await ensureFolder(app, outputFolder);
-		await writeAtomic(app.vault, filePath, content);
+		await writeAtomic(app.vault, filePath, content, { onCommitted: options.onAtomicWriteCommitted });
 		return { status: "created", filePath, title: safeName };
 	}
 }
@@ -56,6 +57,7 @@ export async function writeStandalonePage(
 	options: StandalonePageWriteOptions
 ): Promise<PageWriteResult> {
 	const { client, page, outputFolder } = options;
+	requireReservation(options.reservationId, "standalone page write");
 	const title = getStandalonePageTitle(page);
 	const safeName = safeFileNameForPage(title || "Untitled", page.id);
 	const filePath = normalizePath(`${outputFolder}/${safeName}.md`);
@@ -77,12 +79,18 @@ export async function writeStandalonePage(
 	const content = buildFileContent(frontmatter, markdown);
 	const existingFile = app.vault.getAbstractFileByPath(filePath);
 	if (existingFile instanceof TFile) {
-		await modifyAtomic(app.vault, existingFile, content);
+		await modifyAtomic(app.vault, existingFile, content, { onCommitted: options.onAtomicWriteCommitted });
 		return { status: "updated", filePath, title: safeName };
 	}
 	await ensureFolder(app, outputFolder);
-	await writeAtomic(app.vault, filePath, content);
+	await writeAtomic(app.vault, filePath, content, { onCommitted: options.onAtomicWriteCommitted });
 	return { status: "created", filePath, title: safeName };
+}
+
+function requireReservation(reservationId: string | undefined, writer: string): void {
+	if (!reservationId) {
+		throw new Error(`Reservation required before ${writer}.`);
+	}
 }
 
 function getPageTitle(page: PageObjectResponse): string {

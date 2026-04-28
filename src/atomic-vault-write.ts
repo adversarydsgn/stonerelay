@@ -1,5 +1,6 @@
 import { TFile } from "obsidian";
 import { PluginDataAdapter } from "./plugin-data";
+import { withReservationPathLock } from "./reservations";
 
 export class AtomicWriteUnavailableError extends Error {
 	constructor(message: string) {
@@ -17,8 +18,6 @@ export interface AtomicVaultLike {
 export interface AtomicWriteOptions {
 	onCommitted?: (path: string) => void;
 }
-
-const locks = new Map<string, Promise<void>>();
 
 export async function writeAtomic(
 	vault: AtomicVaultLike,
@@ -46,7 +45,7 @@ export async function writeAtomic(
 				if (!isFallbackRenameError(err)) throw err;
 			}
 		}
-		await withPathLock(path, async () => {
+		await withReservationPathLock(path, async () => {
 			if (adapter.read) {
 				const tempContent = await adapter.read(tempPath);
 				if (tempContent !== content) {
@@ -73,22 +72,6 @@ export async function modifyAtomic(
 	options: AtomicWriteOptions = {}
 ): Promise<void> {
 	await writeAtomic(vault, file.path, content, options);
-}
-
-export async function withPathLock<T>(path: string, task: () => Promise<T>): Promise<T> {
-	const previous = locks.get(path) ?? Promise.resolve();
-	let release!: () => void;
-	const current = new Promise<void>((resolve) => {
-		release = resolve;
-	});
-	locks.set(path, previous.then(() => current, () => current));
-	await previous.catch(() => undefined);
-	try {
-		return await task();
-	} finally {
-		release();
-		if (locks.get(path) === current) locks.delete(path);
-	}
 }
 
 function isFallbackRenameError(err: unknown): boolean {

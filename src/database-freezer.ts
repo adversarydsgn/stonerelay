@@ -23,6 +23,7 @@ export async function freshDatabaseImport(
 	onProgress?: ProgressCallback,
 	options: SyncRunOptions = {}
 ): Promise<DatabaseSyncResult> {
+	requireReservation(options.reservationId, "fresh database import");
 	// Validate database exists
 	const database = (await notionRequest(() =>
 		client.databases.retrieve({ database_id: databaseId })
@@ -61,13 +62,27 @@ export async function freshDatabaseImport(
 	// Query all entries
 	onProgress?.({ phase: "querying" });
 	const entries = await queryAllEntries(client, dataSourceId);
-	await generateBaseFile(app, dataSource, folderPath, databaseId, entries);
 
 	const total = entries.length;
 	let created = 0;
 	let updated = 0;
 	let failed = 0;
 	const errors: string[] = [];
+
+	try {
+		await generateBaseFile(app, dataSource, folderPath, databaseId, entries, undefined, options);
+	} catch (err) {
+		failed++;
+		const msg = `Base file ${folderPath}: ${err instanceof Error ? err.message : String(err)}`;
+		errors.push(msg);
+		options.onRowError?.({
+			rowId: `${folderPath}.base`,
+			direction: "pull",
+			error: msg,
+			errorCode: classifyError(msg),
+			timestamp: new Date().toISOString(),
+		});
+	}
 
 	// Import all entries
 	let current = 0;
@@ -91,6 +106,8 @@ export async function freshDatabaseImport(
 					page: entry,
 					outputFolder: folderPath,
 					databaseId,
+					reservationId: options.reservationId,
+					onAtomicWriteCommitted: options.onAtomicWriteCommitted,
 				}),
 				options.onRowCommitted
 			);
@@ -135,6 +152,7 @@ export async function refreshDatabase(
 	onProgress?: ProgressCallback,
 	options: SyncRunOptions = {}
 ): Promise<DatabaseSyncResult> {
+	requireReservation(options.reservationId, "database refresh");
 	// Query fresh metadata
 	onProgress?.({ phase: "querying" });
 
@@ -164,12 +182,18 @@ export async function refreshDatabase(
 	const localFiles = await scanLocalFiles(app, db.folderPath, db.databaseId);
 
 	const staleEntries: PageObjectResponse[] = [];
+	const legacyBackfills: Array<{ entry: PageObjectResponse; file: TFile }> = [];
 	let skippedCount = 0;
 	const processedIds = new Set<string>();
 
 	for (const entry of entries) {
 		processedIds.add(entry.id);
-		const localFile = localFiles.files.get(entry.id) ?? localFiles.legacyFiles.get(entry.id);
+		const currentFile = localFiles.files.get(entry.id);
+		const legacyFile = localFiles.legacyFiles.get(entry.id);
+		if (!currentFile && legacyFile) {
+			legacyBackfills.push({ entry, file: legacyFile });
+		}
+		const localFile = currentFile ?? legacyFile;
 
 		if (!localFile) {
 			// New row — not in local vault
@@ -188,9 +212,6 @@ export async function refreshDatabase(
 	const total = entries.length;
 	onProgress?.({ phase: "detected", staleCount: staleEntries.length, total });
 
-	// Update .base file (schema may have changed)
-	await generateBaseFile(app, dataSource, db.folderPath, db.databaseId, entries, lastSyncedAt);
-
 	// Import only stale entries
 	let created = 0;
 	let updated = 0;
@@ -198,6 +219,42 @@ export async function refreshDatabase(
 	const errors: string[] = [];
 	const warnings: string[] = [...localFiles.duplicateWarnings];
 	let backfilled = 0;
+
+	for (const { entry, file } of legacyBackfills) {
+		try {
+			await backfillNotionDatabaseId(app, file, db.databaseId, options);
+			localFiles.files.set(entry.id, file);
+			localFiles.legacyFiles.delete(entry.id);
+			backfilled++;
+		} catch (err) {
+			failed++;
+			const msg = `Entry ${entry.id}: failed to backfill notion-database-id: ${err instanceof Error ? err.message : String(err)}`;
+			errors.push(msg);
+			options.onRowError?.({
+				rowId: entry.id,
+				direction: "pull",
+				error: msg,
+				errorCode: classifyError(msg),
+				timestamp: new Date().toISOString(),
+			});
+		}
+	}
+
+	// Update .base file (schema may have changed)
+	try {
+		await generateBaseFile(app, dataSource, db.folderPath, db.databaseId, entries, lastSyncedAt, options);
+	} catch (err) {
+		failed++;
+		const msg = `Base file ${db.folderPath}: ${err instanceof Error ? err.message : String(err)}`;
+		errors.push(msg);
+		options.onRowError?.({
+			rowId: `${db.folderPath}.base`,
+			direction: "pull",
+			error: msg,
+			errorCode: classifyError(msg),
+			timestamp: new Date().toISOString(),
+		});
+	}
 
 	let current = 0;
 	let skippingUntilCursor = Boolean(options.startAfterRowId);
@@ -214,14 +271,6 @@ export async function refreshDatabase(
 		onProgress?.({ phase: "importing", current, total: staleEntries.length });
 
 		try {
-			const localFile = localFiles.files.get(entry.id);
-			const legacyFile = localFiles.legacyFiles.get(entry.id);
-			if (!localFile && legacyFile) {
-				await backfillNotionDatabaseId(app, legacyFile, db.databaseId);
-				localFiles.files.set(entry.id, legacyFile);
-				localFiles.legacyFiles.delete(entry.id);
-				backfilled++;
-			}
 			const effectiveLocalFile = localFiles.files.get(entry.id);
 			if (options.bidirectional && effectiveLocalFile) {
 				const decision = decideBidirectionalAction({
@@ -255,6 +304,8 @@ export async function refreshDatabase(
 					page: entry,
 					outputFolder: db.folderPath,
 					databaseId: db.databaseId,
+					reservationId: options.reservationId,
+					onAtomicWriteCommitted: options.onAtomicWriteCommitted,
 				}),
 				options.onRowCommitted
 			);
@@ -281,7 +332,7 @@ export async function refreshDatabase(
 	for (const [id, file] of localFiles.files) {
 		if (!processedIds.has(id)) {
 			try {
-				await markAsDeleted(app, file);
+				await markAsDeleted(app, file, options);
 				deleted++;
 			} catch (err) {
 				failed++;
@@ -411,7 +462,7 @@ export async function scanLocalFiles(
 	};
 }
 
-async function markAsDeleted(app: App, file: TFile): Promise<void> {
+async function markAsDeleted(app: App, file: TFile, options: SyncRunOptions = {}): Promise<void> {
 	const content = await app.vault.read(file);
 
 	// Check if already marked
@@ -423,27 +474,27 @@ async function markAsDeleted(app: App, file: TFile): Promise<void> {
 		if (endIdx !== -1) {
 			const before = content.slice(0, endIdx);
 			const after = content.slice(endIdx);
-			await modifyAtomic(app.vault, file, before + "\nnotion-deleted: true" + after);
+			await modifyAtomic(app.vault, file, before + "\nnotion-deleted: true" + after, { onCommitted: options.onAtomicWriteCommitted });
 			return;
 		}
 	}
 
 	// No frontmatter found, add it
 	const fm = "---\nnotion-deleted: true\n---\n";
-	await modifyAtomic(app.vault, file, fm + content);
+	await modifyAtomic(app.vault, file, fm + content, { onCommitted: options.onAtomicWriteCommitted });
 }
 
-async function backfillNotionDatabaseId(app: App, file: TFile, databaseId: string): Promise<void> {
+async function backfillNotionDatabaseId(app: App, file: TFile, databaseId: string, options: SyncRunOptions = {}): Promise<void> {
 	const content = await app.vault.read(file);
 	if (content.includes("notion-database-id:")) return;
 	if (content.startsWith("---\n")) {
 		const endIdx = content.indexOf("\n---", 3);
 		if (endIdx !== -1) {
-			await modifyAtomic(app.vault, file, `${content.slice(0, endIdx)}\nnotion-database-id: ${databaseId}${content.slice(endIdx)}`);
+			await modifyAtomic(app.vault, file, `${content.slice(0, endIdx)}\nnotion-database-id: ${databaseId}${content.slice(endIdx)}`, { onCommitted: options.onAtomicWriteCommitted });
 			return;
 		}
 	}
-	await modifyAtomic(app.vault, file, `---\nnotion-database-id: ${databaseId}\n---\n${content}`);
+	await modifyAtomic(app.vault, file, `---\nnotion-database-id: ${databaseId}\n---\n${content}`, { onCommitted: options.onAtomicWriteCommitted });
 }
 
 async function generateBaseFile(
@@ -452,7 +503,8 @@ async function generateBaseFile(
 	folderPath: string,
 	notionId: string,
 	rows: PageObjectResponse[] = [],
-	lastSyncedAt?: string | null
+	lastSyncedAt?: string | null,
+	options: SyncRunOptions = {}
 ): Promise<void> {
 	const title = convertRichText(dataSource.title) || "Untitled Database";
 	const basePath = normalizePath(`${folderPath}/${title}.base`);
@@ -480,15 +532,21 @@ async function generateBaseFile(
 	});
 
 	if (existingFile instanceof TFile) {
-		await modifyAtomic(app.vault, existingFile, baseContent);
+		await modifyAtomic(app.vault, existingFile, baseContent, { onCommitted: options.onAtomicWriteCommitted });
 	} else {
-		await writeAtomic(app.vault, basePath, baseContent);
+		await writeAtomic(app.vault, basePath, baseContent, { onCommitted: options.onAtomicWriteCommitted });
 	}
 }
 
 function pathInsideFolder(path: string, folderPath: string): boolean {
 	const folder = normalizePath(folderPath).replace(/\/+$/, "");
 	return path === folder || path.startsWith(`${folder}/`);
+}
+
+function requireReservation(reservationId: string | undefined, writer: string): void {
+	if (!reservationId) {
+		throw new Error(`Reservation required before ${writer}.`);
+	}
 }
 
 function isUserEditedBaseFile(file: TFile, lastSyncedAt?: string | null): boolean {

@@ -77,20 +77,19 @@ export async function appendIntentRecord(
 	record: PushIntentRecord
 ): Promise<void> {
 	if (!adapter.write) throw new Error("Push intent log unavailable: adapter.write is not available.");
+	if (!adapter.rename) {
+		throw new Error("Push intent log degraded: adapter.rename is required for atomic intent commits.");
+	}
 	const existing = adapter.read ? await adapter.read(logPath).catch(() => "") : "";
 	const payload = `${existing}${JSON.stringify(record)}\n`;
 	const tempPath = `${logPath}.tmp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 	await adapter.write(tempPath, payload);
 	try {
-		if (adapter.rename) {
-			try {
-				await adapter.rename(tempPath, logPath);
-				return;
-			} catch {
-				// Some adapters cannot replace existing files with rename.
-			}
+		try {
+			await adapter.rename(tempPath, logPath);
+		} catch (err) {
+			throw new Error(`Atomic push intent log commit failed for ${logPath}: ${err instanceof Error ? err.message : String(err)}`);
 		}
-		await adapter.write(logPath, payload);
 	} finally {
 		await adapter.remove?.(tempPath).catch(() => undefined);
 	}
@@ -127,11 +126,15 @@ export async function recoverPushIntents(
 	for (const [intentId, record] of latest) {
 		if (record.phase !== "created" || !record.notion_id) continue;
 		if (isOlderThanThirtyDays(record.completed_at ?? record.started_at, now)) {
-			await appendIntentRecord(adapter, logPath, {
-				...record,
-				phase: "archived",
-				completed_at: now.toISOString(),
-			});
+			try {
+				await appendIntentRecord(adapter, logPath, {
+					...record,
+					phase: "archived",
+					completed_at: now.toISOString(),
+				});
+			} catch {
+				// Keep startup non-blocking on adapters that cannot atomically update the log.
+			}
 			continue;
 		}
 		recoveries.push({

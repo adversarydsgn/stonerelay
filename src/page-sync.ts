@@ -1,7 +1,7 @@
 import { Client } from "@notionhq/client";
 import { PageObjectResponse } from "@notionhq/client/build/src/api-endpoints";
 import { App } from "obsidian";
-import { PageSyncEntry } from "./types";
+import { PageSyncEntry, SyncRunOptions } from "./types";
 import { notionRequest } from "./notion-client";
 import { writeStandalonePage } from "./page-writer";
 
@@ -20,13 +20,17 @@ export async function importStandalonePage(
 	app: App,
 	client: Client,
 	pageId: string,
-	outputFolder: string
+	outputFolder: string,
+	options: SyncRunOptions = {}
 ): Promise<{ filePath: string; title: string; page: PageObjectResponse }> {
+	requireReservation(options.reservationId, "standalone page import");
 	const page = await fetchStandalonePageMetadata(client, pageId);
 	const result = await writeStandalonePage(app, {
 		client,
 		page,
 		outputFolder,
+		reservationId: options.reservationId,
+		onAtomicWriteCommitted: options.onAtomicWriteCommitted,
 	});
 	return { filePath: result.filePath, title: result.title, page };
 }
@@ -34,7 +38,14 @@ export async function importStandalonePage(
 export async function refreshStandalonePage(
 	app: App,
 	client: Client,
-	entry: PageSyncEntry
+	entry: PageSyncEntry,
+	options: SyncRunOptions = {}
 ): Promise<{ filePath: string; title: string; page: PageObjectResponse }> {
-	return importStandalonePage(app, client, entry.pageId, entry.outputFolder);
+	return importStandalonePage(app, client, entry.pageId, entry.outputFolder, options);
+}
+
+function requireReservation(reservationId: string | undefined, writer: string): void {
+	if (!reservationId) {
+		throw new Error(`Reservation required before ${writer}.`);
+	}
 }

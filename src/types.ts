@@ -130,12 +130,16 @@ export interface PageWriteOptions {
 	page: PageObjectResponse;
 	outputFolder: string;
 	databaseId: string;
+	reservationId?: string;
+	onAtomicWriteCommitted?: (path: string) => void;
 }
 
 export interface StandalonePageWriteOptions {
 	client: Client;
 	page: PageObjectResponse;
 	outputFolder: string;
+	reservationId?: string;
+	onAtomicWriteCommitted?: (path: string) => void;
 }
 
 export interface PageWriteResult {
@@ -156,6 +160,12 @@ export interface DatabaseSyncResult {
 	errors: string[];
 	warnings?: string[];
 	backfilled?: number;
+}
+
+export interface AtomicWriteEvent {
+	path: string;
+	reservationId?: string;
+	committedAt: string;
 }
 
 export type ProgressPhase =

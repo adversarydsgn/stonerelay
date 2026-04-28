@@ -326,9 +326,7 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 			containerEl.createEl("hr", { cls: "stonerelay-edit-divider" });
 		}
 
-		renderDiagnosticsPanel(containerEl, this.plugin.settings, {
-			staleIdCandidateCount: (_entry, folder) => this.countStaleIdCandidates(folder),
-		});
+		this.renderDiagnostics(containerEl);
 		renderBratStatusPanel(
 			containerEl,
 			getInstalledPluginVersion(this.app, this.plugin.manifest.version),
@@ -423,6 +421,39 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 			const notionId = this.app.metadataCache.getFileCache(file)?.frontmatter?.["notion-id"];
 			return typeof notionId === "string" && notionId.trim().length > 0;
 		}).length;
+	}
+
+	private renderDiagnostics(containerEl: HTMLElement): void {
+		renderDiagnosticsPanel(containerEl, this.plugin.settings, {
+			staleIdCandidateCount: (_entry, folder) => this.countStaleIdCandidates(folder),
+			duplicateNotionIdCount: (entry) => this.countDuplicateNotionIds(entry),
+			backfilledFileCount: (entry) => this.plugin.getLastBackfilledFileCount(entry.id),
+			activeOperations: this.plugin.getActiveOperationSnapshots(),
+			pushIntentRecoveries: this.plugin.getPushIntentRecoveries(),
+			onApplyPushIntentRecovery: (intentId) => { void this.plugin.applyPushIntentRecovery(intentId); },
+			onArchivePushIntentRecovery: (intentId) => { void this.plugin.archivePushIntentRecovery(intentId); },
+		});
+	}
+
+	private countDuplicateNotionIds(entry: SyncedDatabase): number {
+		const pathModel = resolveDatabasePathModel(this.plugin.settings, entry);
+		const seen = new Set<string>();
+		const duplicates = new Set<string>();
+		const targetDbId = normalizedId(entry.databaseId);
+		for (const file of this.app.vault.getMarkdownFiles()) {
+			if (!pathStartsWith(file.path, pathModel.pushSourceFolder)) continue;
+			const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter ?? {};
+			const notionId = typeof frontmatter["notion-id"] === "string" ? normalizedId(frontmatter["notion-id"]) : "";
+			if (!notionId) continue;
+			const notionDatabaseId = typeof frontmatter["notion-database-id"] === "string" ? normalizedId(frontmatter["notion-database-id"]) : "";
+			if (notionDatabaseId && notionDatabaseId !== targetDbId) continue;
+			if (seen.has(notionId)) {
+				duplicates.add(notionId);
+			} else {
+				seen.add(notionId);
+			}
+		}
+		return duplicates.size;
 	}
 
 	private async saveApiKey(value: string): Promise<void> {
@@ -1513,6 +1544,10 @@ function directionName(direction: SyncDirection): string {
 
 function canPush(entry: SyncedDatabase): boolean {
 	return entry.direction === "push" || entry.direction === "bidirectional";
+}
+
+function normalizedId(value: string): string {
+	return value.replace(/-/g, "").trim().toLowerCase();
 }
 
 function directionIcon(entry: SyncedDatabase): string {

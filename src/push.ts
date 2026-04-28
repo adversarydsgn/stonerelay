@@ -66,6 +66,7 @@ export async function pushDatabase(
 	sourceFolder: string,
 	options: SyncRunOptions = {}
 ): Promise<DatabaseSyncResult> {
+	requireReservation(options.reservationId, "database push");
 	const database = (await notionRequest(() =>
 		client.databases.retrieve({ database_id: databaseId })
 	)) as DatabaseObjectResponse;
@@ -140,7 +141,7 @@ export async function pushDatabase(
 					} as never)),
 					options.onRowCommitted
 				);
-				await refreshFrontmatterNotionId(app, doc, getReturnedPageId(page) ?? existingId);
+				await refreshFrontmatterNotionId(app, doc, getReturnedPageId(page) ?? existingId, options);
 				updated++;
 			} else {
 				const intentId = await options.onPushIntentCreating?.(doc.file.path, doc.title);
@@ -154,7 +155,7 @@ export async function pushDatabase(
 				const returnedId = getReturnedPageId(page);
 				if (returnedId) {
 					if (intentId) await options.onPushIntentCreated?.(intentId, returnedId);
-					await refreshFrontmatterNotionId(app, doc, returnedId);
+					await refreshFrontmatterNotionId(app, doc, returnedId, options);
 					if (intentId) await options.onPushIntentCommitted?.(intentId);
 				}
 				created++;
@@ -530,13 +531,20 @@ function getReturnedPageId(value: unknown): string | null {
 async function refreshFrontmatterNotionId(
 	app: App,
 	doc: MarkdownDocument,
-	notionId: string
+	notionId: string,
+	options: SyncRunOptions = {}
 ): Promise<void> {
 	if (!notionId || doc.props["notion-id"] === notionId) return;
 	const raw = await app.vault.cachedRead(doc.file);
 	const next = upsertFrontmatterValue(raw, "notion-id", notionId);
-	if (next !== raw) await modifyAtomic(app.vault, doc.file, next);
+	if (next !== raw) await modifyAtomic(app.vault, doc.file, next, { onCommitted: options.onAtomicWriteCommitted });
 	doc.props["notion-id"] = notionId;
+}
+
+function requireReservation(reservationId: string | undefined, writer: string): void {
+	if (!reservationId) {
+		throw new Error(`Reservation required before ${writer}.`);
+	}
 }
 
 function upsertFrontmatterValue(raw: string, key: string, value: string): string {

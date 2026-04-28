@@ -43,6 +43,25 @@ describe("push intent log", () => {
 		expect(lines).toHaveLength(1);
 		expect(JSON.parse(lines[0]).intent_id).toBe("intent-1");
 	});
+
+	it("does not overwrite the live log when rename replacement is degraded", async () => {
+		const adapter = memoryAdapter();
+		await appendIntentRecord(adapter, "push-intents.jsonl", baseRecord("intent-1"));
+		adapter.rename = vi.fn(async () => {
+			throw new Error("rename replacement unavailable");
+		});
+		adapter.write = vi.fn(async (path: string, data: string) => {
+			if (!path.includes(".tmp-")) throw new Error("final write should not run");
+			adapter.files.set(path, data);
+		});
+
+		await expect(appendIntentRecord(adapter, "push-intents.jsonl", baseRecord("intent-2")))
+			.rejects.toThrow("Atomic");
+		const lines = adapter.files.get("push-intents.jsonl")?.trim().split(/\r?\n/) ?? [];
+		expect(lines).toHaveLength(1);
+		expect(JSON.parse(lines[0]).intent_id).toBe("intent-1");
+		expect(adapter.write).not.toHaveBeenCalledWith("push-intents.jsonl", expect.any(String));
+	});
 });
 
 function baseRecord(intentId: string) {
