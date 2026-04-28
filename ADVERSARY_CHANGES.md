@@ -2,6 +2,15 @@
 
 Fork-side changes to `stonerelay` (vs. upstream `ran-codes/obsidian-notion-database-sync`).
 
+## v0.9.9 — 2026-04-28
+
+Audit-fix amendment release for the v0.9.7 lifecycle and safety boundary.
+
+**Behavior notes:**
+- Amends A1 to codify the operational boundary: production entrypoints hold `ReservationManager` handles, while exported writer helpers accept caller-provided reservation ids for orchestration and direct helper tests.
+- Amends C4 to codify that capability-B atomic fallback writes use the per-path fallback lock exported from `reservations.ts`, distinct from `ReservationManager` because fallback vault serialization performs no Notion-side mutation.
+- Adds boundary coverage using real `ReservationManager` ids in helper tests and explicit lock-domain coverage for normal capability-A writes versus capability-B fallback writes.
+
 ## v0.9.8 — 2026-04-28
 
 Audit-fix release for the v0.9.7 lifecycle and safety substrate.

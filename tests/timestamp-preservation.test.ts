@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 import { TFile, TFolder } from "obsidian";
 import { frontmatterValueToNotionPayload, pushDatabase } from "../src/push";
+import { ReservationManager } from "../src/reservations";
 
 describe("timestamp preservation", () => {
 	test("user-set date properties survive Notion → vault → Notion", async () => {
@@ -19,7 +20,9 @@ describe("timestamp preservation", () => {
 			updateResult: page("page-1", "Timestamp Row 1", baselineCreatedTime, "2026-04-25T17:00:00.000Z"),
 		});
 
-		const result = await pushDatabase(app as never, client as never, "db-1", "_relay/timestamp-test", { reservationId: "test-reservation" });
+		const result = await withTimestampReservation((reservationId) =>
+			pushDatabase(app as never, client as never, "db-1", "_relay/timestamp-test", { reservationId })
+		);
 
 		expect(client.pages.update).toHaveBeenCalledTimes(1);
 		expect(client.pages.create).not.toHaveBeenCalled();
@@ -39,7 +42,9 @@ describe("timestamp preservation", () => {
 			updateResult: page("page-1", "Timestamp Row 1", "2026-01-15T12:00:00.000Z", pushedEditedTime),
 		});
 
-		await pushDatabase(app as never, client as never, "db-1", "_relay/timestamp-test", { reservationId: "test-reservation" });
+		await withTimestampReservation((reservationId) =>
+			pushDatabase(app as never, client as never, "db-1", "_relay/timestamp-test", { reservationId })
+		);
 
 		const pushedPage = await client.pages.update.mock.results[0].value;
 		expect(Date.parse(pushedPage.last_edited_time)).toBeGreaterThan(Date.parse(baselineEditedTime));
@@ -163,4 +168,21 @@ function richText(content: string) {
 		},
 		href: null,
 	};
+}
+
+async function withTimestampReservation<T>(task: (reservationId: string) => Promise<T>): Promise<T> {
+	const manager = new ReservationManager();
+	const reservation = await manager.acquire({
+		entryId: "test-timestamp",
+		entryName: "Timestamp helper test",
+		databaseId: "db-1",
+		vaultFolder: "_relay/timestamp-test",
+		type: "push",
+		policy: "manual",
+	});
+	try {
+		return await task(reservation.id);
+	} finally {
+		reservation.release();
+	}
 }

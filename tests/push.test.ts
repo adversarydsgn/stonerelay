@@ -7,6 +7,7 @@ import {
 	pushDatabase,
 	PushContext,
 } from "../src/push";
+import { ReservationManager } from "../src/reservations";
 
 function ctx(): PushContext {
 	return {
@@ -134,7 +135,9 @@ describe("pushDatabase integration", () => {
 			pages: { update, create },
 		};
 
-		const result = await pushDatabase(app as never, client as never, "db-1", "_relay/bugs", { reservationId: "test-reservation" });
+		const result = await withPushReservation((reservationId) =>
+			pushDatabase(app as never, client as never, "db-1", "_relay/bugs", { reservationId })
+		);
 
 		expect(update).toHaveBeenCalledTimes(2);
 		expect(update.mock.calls.map(([arg]) => arg.page_id)).toEqual(["page-1", "page-2"]);
@@ -189,7 +192,9 @@ describe("pushDatabase integration", () => {
 			},
 		};
 
-		const result = await pushDatabase(app as never, client as never, "db-1", "_relay/bugs", { reservationId: "test-reservation" });
+		const result = await withPushReservation((reservationId) =>
+			pushDatabase(app as never, client as never, "db-1", "_relay/bugs", { reservationId })
+		);
 
 		expect(client.pages.create).toHaveBeenCalledTimes(2);
 		expect(result.created).toBe(1);
@@ -231,10 +236,10 @@ describe("pushDatabase integration", () => {
 			},
 		};
 
-		const result = await pushDatabase(app as never, client as never, "db-1", "_relay/bugs", {
-			reservationId: "test-reservation",
+		const result = await withPushReservation((reservationId) => pushDatabase(app as never, client as never, "db-1", "_relay/bugs", {
+			reservationId,
 			allowStaleNotionIdThresholdProceed: true,
-		});
+		}));
 
 		expect(client.pages.update).not.toHaveBeenCalled();
 		expect(client.pages.create).not.toHaveBeenCalled();
@@ -281,7 +286,9 @@ describe("pushDatabase integration", () => {
 			},
 		};
 
-		await expect(pushDatabase(app as never, client as never, "db-1", "_relay/bugs", { reservationId: "test-reservation" }))
+		await expect(withPushReservation((reservationId) =>
+			pushDatabase(app as never, client as never, "db-1", "_relay/bugs", { reservationId })
+		))
 			.rejects.toThrow("stale notion-id confirmation required");
 		expect(client.pages.update).not.toHaveBeenCalled();
 		expect(client.pages.create).not.toHaveBeenCalled();
@@ -321,7 +328,10 @@ describe("pushDatabase integration", () => {
 			},
 		};
 
-		await expect(pushDatabase(app as never, client as never, "21b39452dc7b4a159d6b7b229c21cc80", "_relay/bugs", { reservationId: "test-reservation" }))
+		await expect(withPushReservation((reservationId) =>
+			pushDatabase(app as never, client as never, "21b39452dc7b4a159d6b7b229c21cc80", "_relay/bugs", { reservationId }),
+			"21b39452dc7b4a159d6b7b229c21cc80"
+		))
 			.rejects.toThrow("Push blocked before Notion write");
 		expect(client.pages.update).not.toHaveBeenCalled();
 		expect(client.pages.create).not.toHaveBeenCalled();
@@ -362,7 +372,9 @@ describe("pushDatabase integration", () => {
 			},
 		};
 
-		await expect(pushDatabase(app as never, client as never, "db-1", "_relay/bugs", { reservationId: "test-reservation" }))
+		await expect(withPushReservation((reservationId) =>
+			pushDatabase(app as never, client as never, "db-1", "_relay/bugs", { reservationId })
+		))
 			.rejects.toThrow("duplicate notion-id values");
 		expect(client.pages.update).not.toHaveBeenCalled();
 		expect(client.pages.create).not.toHaveBeenCalled();
@@ -408,8 +420,8 @@ describe("pushDatabase integration", () => {
 			},
 		};
 
-		const result = await pushDatabase(app as never, client as never, "db-1", "_relay/bugs", {
-			reservationId: "test-reservation",
+		const result = await withPushReservation((reservationId) => pushDatabase(app as never, client as never, "db-1", "_relay/bugs", {
+			reservationId,
 			onPushIntentCreating: async () => {
 				phases.push("creating");
 				return "intent-1";
@@ -420,7 +432,7 @@ describe("pushDatabase integration", () => {
 			onPushIntentCommitted: async () => {
 				phases.push("committed");
 			},
-		});
+		}));
 
 		expect(result.created).toBe(1);
 		expect(phases).toEqual(["creating", "created:created-page", "committed"]);
@@ -471,4 +483,25 @@ function richText(content: string) {
 		},
 		href: null,
 	};
+}
+
+async function withPushReservation<T>(
+	task: (reservationId: string) => Promise<T>,
+	databaseId = "db-1",
+	vaultFolder = "_relay/bugs"
+): Promise<T> {
+	const manager = new ReservationManager();
+	const reservation = await manager.acquire({
+		entryId: "test-push",
+		entryName: "Push helper test",
+		databaseId,
+		vaultFolder,
+		type: "push",
+		policy: "manual",
+	});
+	try {
+		return await task(reservation.id);
+	} finally {
+		reservation.release();
+	}
 }

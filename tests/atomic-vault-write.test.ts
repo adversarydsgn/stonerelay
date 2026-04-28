@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import { TFile } from "obsidian";
 import { AtomicWriteUnavailableError, modifyAtomic, writeAtomic } from "../src/atomic-vault-write";
+import {
+	getActiveReservationPathLocks,
+	ReservationManager,
+	ReservationPathLock,
+	RESERVATION_MANAGER_LOCK_KIND,
+	RESERVATION_PATH_LOCK_KIND,
+} from "../src/reservations";
 
 describe("atomic vault content writes", () => {
 	it("commits through temp write plus rename when rename is available", async () => {
@@ -45,6 +52,63 @@ describe("atomic vault content writes", () => {
 		expect(adapter.events.filter((event) => event === "write:note.md")).toHaveLength(2);
 	});
 
+	it("keeps ReservationManager reservations and fallback path locks in separate lock domains", async () => {
+		const manager = new ReservationManager();
+		const reservation = await manager.acquire({
+			entryId: "db-1",
+			entryName: "Bugs DB",
+			databaseId: "db-1",
+			vaultFolder: "_relay/bugs",
+			type: "push",
+			policy: "manual",
+		});
+		const renameGate = deferred<void>();
+		const renameAdapter = memoryAdapter([["normal.md", "original"]]);
+		let sawReservationDuringRename = false;
+		renameAdapter.rename = vi.fn(async (from: string, to: string) => {
+			sawReservationDuringRename = manager.hasReservation(reservation.id);
+			await renameGate.promise;
+			const data = renameAdapter.files.get(from);
+			if (data === undefined) throw new Error("missing temp");
+			renameAdapter.files.set(to, data);
+			renameAdapter.files.delete(from);
+		});
+
+		const normalWrite = writeAtomic({ adapter: renameAdapter }, "normal.md", "new");
+		await vi.waitFor(() => expect(sawReservationDuringRename).toBe(true));
+		expect(reservation.lockKind).toBe(RESERVATION_MANAGER_LOCK_KIND);
+		expect(getActiveReservationPathLocks()).toEqual([]);
+		renameGate.resolve();
+		await normalWrite;
+		reservation.release();
+
+		const fallbackGate = deferred<void>();
+		const fallbackAdapter = memoryAdapter([["fallback.md", "original"]]);
+		delete fallbackAdapter.rename;
+		let fallbackFinalWriteEntered = false;
+		fallbackAdapter.write = vi.fn(async (path: string, data: string) => {
+			fallbackAdapter.events.push(`write:${path.includes(".tmp-") ? "tmp" : path}`);
+			if (path === "fallback.md") {
+				fallbackFinalWriteEntered = true;
+				await fallbackGate.promise;
+			}
+			fallbackAdapter.files.set(path, data);
+		});
+
+		const fallbackWrite = writeAtomic({ adapter: fallbackAdapter }, "fallback.md", "fallback");
+		await vi.waitFor(() => expect(fallbackFinalWriteEntered).toBe(true));
+		const pathLocks = getActiveReservationPathLocks();
+		expect(manager.size()).toBe(0);
+		expect(pathLocks).toHaveLength(1);
+		expect(pathLocks[0]).toBeInstanceOf(ReservationPathLock);
+		expect(pathLocks[0].kind).toBe(RESERVATION_PATH_LOCK_KIND);
+		expect(pathLocks[0].kind).not.toBe(reservation.lockKind);
+		expect(pathLocks[0]).not.toBe(reservation);
+		fallbackGate.resolve();
+		await fallbackWrite;
+		expect(getActiveReservationPathLocks()).toEqual([]);
+	});
+
 	it("throws a clear error when neither adapter write nor rename path is available", async () => {
 		await expect(writeAtomic({ adapter: {} }, "note.md", "new")).rejects.toThrow("adapter.write is not available");
 	});
@@ -82,4 +146,12 @@ function memoryAdapter(initial: Array<[string, string]> = []) {
 		},
 	};
 	return adapter;
+}
+
+function deferred<T>() {
+	let resolve!: (value: T | PromiseLike<T>) => void;
+	const promise = new Promise<T>((res) => {
+		resolve = res;
+	});
+	return { promise, resolve };
 }

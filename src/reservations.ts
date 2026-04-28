@@ -2,6 +2,8 @@ import { normalizeNotionId } from "./notion-client";
 
 export type ReservationPolicy = "manual" | "batch" | "auto";
 export type ReservationOperationType = "pull" | "push" | "page" | "conflict" | "startup" | "atomic-write";
+export const RESERVATION_MANAGER_LOCK_KIND = "reservation-manager";
+export const RESERVATION_PATH_LOCK_KIND = "reservation-path-lock";
 
 export interface ReservationAcquireInput {
 	entryId: string;
@@ -25,6 +27,7 @@ export interface ActiveReservationSnapshot {
 }
 
 export interface ReservationHandle extends ActiveReservationSnapshot {
+	lockKind: typeof RESERVATION_MANAGER_LOCK_KIND;
 	controller: AbortController;
 	signal: AbortSignal;
 	release: () => void;
@@ -61,6 +64,12 @@ export class ReservationCancelledError extends Error {
 		super(message);
 		this.name = "ReservationCancelledError";
 	}
+}
+
+export class ReservationPathLock {
+	readonly kind = RESERVATION_PATH_LOCK_KIND;
+
+	constructor(readonly path: string) {}
 }
 
 export class ReservationManager {
@@ -166,6 +175,7 @@ export class ReservationManager {
 		this.active.set(id, record);
 		return {
 			...snapshot,
+			lockKind: RESERVATION_MANAGER_LOCK_KIND,
 			controller,
 			signal: controller.signal,
 			release,
@@ -200,6 +210,11 @@ export class ReservationManager {
 }
 
 const fileLocks = new Map<string, Promise<void>>();
+const activeFileLocks = new Map<string, ReservationPathLock>();
+
+export function getActiveReservationPathLocks(): ReservationPathLock[] {
+	return [...activeFileLocks.values()];
+}
 
 export async function withReservationPathLock<T>(path: string, task: () => Promise<T>): Promise<T> {
 	const key = normalizeReservationFolder(path);
@@ -208,13 +223,17 @@ export async function withReservationPathLock<T>(path: string, task: () => Promi
 	const current = new Promise<void>((resolve) => {
 		release = resolve;
 	});
-	fileLocks.set(key, previous.then(() => current, () => current));
+	const tail = previous.then(() => current, () => current);
+	fileLocks.set(key, tail);
 	await previous.catch(() => undefined);
+	const activeLock = new ReservationPathLock(key);
+	activeFileLocks.set(key, activeLock);
 	try {
 		return await task();
 	} finally {
+		activeFileLocks.delete(key);
 		release();
-		if (fileLocks.get(key) === current) fileLocks.delete(key);
+		if (fileLocks.get(key) === tail) fileLocks.delete(key);
 	}
 }
 
