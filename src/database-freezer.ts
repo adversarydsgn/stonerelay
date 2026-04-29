@@ -279,6 +279,7 @@ export async function refreshDatabase(
 					notionChanged: true,
 					vaultChanged: vaultChangedSince(effectiveLocalFile, options.bidirectional.lastSyncedAt),
 					sourceOfTruth: options.bidirectional.sourceOfTruth,
+					templaterManaged: options.bidirectional.templaterManaged ?? false,
 					notionEditedAt: entry.last_edited_time,
 					vaultEditedAt: new Date(effectiveLocalFile.stat.mtime).toISOString(),
 					notionSnapshot: snapshotNotionPage(entry),

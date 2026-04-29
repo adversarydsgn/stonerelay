@@ -101,11 +101,45 @@ export class Setting {
 		return this;
 	}
 	addToggle(_callback: (component: any) => void): this {
-		_callback({ setValue: () => ({ onChange: () => undefined }), onChange: () => undefined });
+		const component = {
+			value: false,
+			onChangeCallback: undefined as ((value: boolean) => void) | undefined,
+			setValue(value: boolean) {
+				component.value = value;
+				return component;
+			},
+			onChange(callback: (value: boolean) => void) {
+				component.onChangeCallback = callback;
+				return component;
+			},
+		};
+		_callback(component);
 		return this;
 	}
 	addDropdown(_callback: (component: any) => void): this {
-		_callback({ addOption: () => undefined, setValue: () => ({ onChange: () => undefined }), onChange: () => undefined });
+		const component = {
+			value: "",
+			disabled: false,
+			options: new Map<string, string>(),
+			onChangeCallback: undefined as ((value: string) => void) | undefined,
+			addOption(value: string, label: string) {
+				component.options.set(value, label);
+				return component;
+			},
+			setValue(value: string) {
+				component.value = value;
+				return component;
+			},
+			setDisabled(disabled: boolean) {
+				component.disabled = disabled;
+				return component;
+			},
+			onChange(callback: (value: string) => void) {
+				component.onChangeCallback = callback;
+				return component;
+			},
+		};
+		_callback(component);
 		return this;
 	}
 	addButton(_callback: (component: ButtonComponent) => void): this {
@@ -174,12 +208,13 @@ function createMockElement(tag: string): any {
 		setText(text: string) {
 			this.textContent = text;
 		},
-		createDiv(options?: { cls?: string }) {
-			const child = createMockElement("div");
-			child.cls = options?.cls;
-			this.children.push(child);
-			return child;
-		},
+			createDiv(options?: { cls?: string; text?: string }) {
+				const child = createMockElement("div");
+				child.cls = options?.cls;
+				child.textContent = options?.text ?? "";
+				this.children.push(child);
+				return child;
+			},
 		createEl(childTag: string, options?: { text?: string; cls?: string; href?: string }) {
 			const child = createMockElement(childTag);
 			child.textContent = options?.text ?? "";

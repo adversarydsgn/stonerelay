@@ -29,7 +29,7 @@ export const DEFAULT_SETTINGS: NotionFreezeSettings = {
 	autoSyncEnabled: false,
 	autoSyncDatabasesByDefault: false,
 	autoSyncPagesByDefault: false,
-	schemaVersion: 6,
+	schemaVersion: 7,
 };
 
 export type SyncStatus = "ok" | "partial" | "cancelled" | "error" | "interrupted" | "never" | null;
@@ -92,6 +92,7 @@ export interface SyncedDatabase {
 	current_phase: SyncPhase;
 	initial_seed_direction: "pull" | "push" | null;
 	source_of_truth: SourceOfTruth | null;
+	templater_managed: boolean;
 	first_sync_completed_at: string | null;
 	nest_under_db_name: boolean;
 	current_sync_id: string | null;
@@ -186,6 +187,7 @@ export interface SyncRunOptions {
 	allowStaleNotionIdThresholdProceed?: boolean;
 	bidirectional?: {
 		sourceOfTruth: SourceOfTruth | null;
+		templaterManaged?: boolean;
 		lastSyncedAt?: string | null;
 		onConflict?: (conflict: Conflict) => void;
 	};

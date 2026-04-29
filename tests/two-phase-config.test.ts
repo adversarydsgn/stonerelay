@@ -66,13 +66,14 @@ describe("phase transitions", () => {
 			} as never],
 		});
 
-		expect(migrated.schemaVersion).toBe(6);
+		expect(migrated.schemaVersion).toBe(7);
 		expect(migrated.databases[0]).toMatchObject({
 			current_phase: "phase_2",
 			initial_seed_direction: "push",
 			source_of_truth: "obsidian",
 			first_sync_completed_at: "2026-04-25T20:00:00.000Z",
 			nest_under_db_name: true,
+			templater_managed: false,
 			current_sync_id: null,
 			lastCommittedRowId: null,
 			lastSyncErrors: [],
@@ -112,6 +113,7 @@ describe("phase transitions", () => {
 			current_phase: "phase_2",
 			source_of_truth: "notion",
 			nest_under_db_name: true,
+			templater_managed: false,
 			current_sync_id: null,
 			lastCommittedRowId: null,
 			lastSyncErrors: [],

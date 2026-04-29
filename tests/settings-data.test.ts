@@ -53,6 +53,7 @@ function database(overrides: Partial<SyncedDatabase> = {}): SyncedDatabase {
 		source_of_truth: overrides.source_of_truth ?? null,
 		first_sync_completed_at: overrides.first_sync_completed_at ?? null,
 		nest_under_db_name: overrides.nest_under_db_name ?? true,
+		templater_managed: overrides.templater_managed ?? false,
 		current_sync_id: overrides.current_sync_id ?? null,
 		lastCommittedRowId: overrides.lastCommittedRowId ?? null,
 		lastSyncErrors: overrides.lastSyncErrors ?? [],
@@ -90,7 +91,7 @@ describe("settings data migration", () => {
 		expect(migrated.apiKey).toBe("ntn_existing");
 		expect(migrated.defaultOutputFolder).toBe("Notion");
 		expect(migrated.databases).toEqual([]);
-		expect(migrated.schemaVersion).toBe(6);
+		expect(migrated.schemaVersion).toBe(7);
 		expect(migrated.active_reservations).toEqual([]);
 		expect(migrated.pendingConflicts).toEqual([]);
 		expect(migrated.groups).toEqual([]);
@@ -112,7 +113,7 @@ describe("settings data migration", () => {
 			groupId: null,
 			autoSync: "inherit",
 		});
-		expect(migrated.schemaVersion).toBe(6);
+		expect(migrated.schemaVersion).toBe(7);
 	});
 
 	it("migrates v0.5 entries to schema 3 without data loss", () => {
@@ -131,7 +132,7 @@ describe("settings data migration", () => {
 			} as SyncedDatabase],
 		});
 
-		expect(migrated.schemaVersion).toBe(6);
+		expect(migrated.schemaVersion).toBe(7);
 		expect(migrated.databases[0]).toMatchObject({
 			id: "db-1",
 			name: "Bugs",
@@ -146,6 +147,7 @@ describe("settings data migration", () => {
 			source_of_truth: "notion",
 			first_sync_completed_at: "2026-04-24T10:00:00.000Z",
 			nest_under_db_name: true,
+			templater_managed: false,
 			current_sync_id: null,
 			lastCommittedRowId: null,
 			lastSyncErrors: [],
@@ -168,6 +170,7 @@ describe("settings data migration", () => {
 			source_of_truth: null,
 			first_sync_completed_at: null,
 			nest_under_db_name: true,
+			templater_managed: false,
 			current_sync_id: null,
 			lastCommittedRowId: null,
 			lastSyncErrors: [],
@@ -196,7 +199,7 @@ describe("schema 5 groups, pages, and auto-sync settings", () => {
 	it("migrates v0.8.1 database entries without losing fields", () => {
 		const migrated = migrateData(settings([database({ id: "db-1", autoSync: undefined, groupId: undefined })]));
 
-		expect(migrated.schemaVersion).toBe(6);
+		expect(migrated.schemaVersion).toBe(7);
 		expect(migrated.databases[0]).toMatchObject({
 			id: "db-1",
 			groupId: null,

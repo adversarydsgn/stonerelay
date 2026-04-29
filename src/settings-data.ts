@@ -63,6 +63,7 @@ export function migrateData(data: Partial<NotionFreezeSettings> | null): NotionF
 			current_phase: entry.current_phase ?? (lastSyncedAt ? "phase_2" : "phase_1"),
 			initial_seed_direction: entry.initial_seed_direction ?? (lastSyncedAt ? initialSeedDirection(direction) : null),
 			source_of_truth: entry.source_of_truth ?? (lastSyncedAt ? sourceOfTruthForLegacy(direction) : null),
+			templater_managed: entry.templater_managed ?? false,
 			first_sync_completed_at: entry.first_sync_completed_at ?? lastSyncedAt,
 			nest_under_db_name: entry.nest_under_db_name ?? true,
 			current_sync_id: null,
@@ -86,6 +87,13 @@ export function migrateData(data: Partial<NotionFreezeSettings> | null): NotionF
 	}
 	if (migrated.schemaVersion < 6) {
 		migrated.schemaVersion = 6;
+	}
+	if (migrated.schemaVersion < 7) {
+		migrated.databases = (migrated.databases ?? []).map((entry) => ({
+			...entry,
+			templater_managed: entry.templater_managed ?? false,
+		}));
+		migrated.schemaVersion = 7;
 	}
 	migrated.active_reservations = [];
 
@@ -340,6 +348,7 @@ export function createDatabaseEntry(entry: Partial<SyncedDatabase>): SyncedDatab
 		current_phase: entry.current_phase ?? (entry.lastSyncedAt ? "phase_2" : "phase_1"),
 		initial_seed_direction: entry.initial_seed_direction ?? null,
 		source_of_truth: entry.source_of_truth ?? null,
+		templater_managed: entry.templater_managed ?? false,
 		first_sync_completed_at: entry.first_sync_completed_at ?? null,
 		nest_under_db_name: entry.nest_under_db_name ?? true,
 		current_sync_id: entry.current_sync_id ?? null,

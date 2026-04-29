@@ -46,6 +46,7 @@ function settings(databases: Partial<SyncedDatabase>[]): NotionFreezeSettings {
 			source_of_truth: entry.source_of_truth ?? "notion",
 			first_sync_completed_at: entry.first_sync_completed_at ?? null,
 			nest_under_db_name: entry.nest_under_db_name ?? true,
+			templater_managed: entry.templater_managed ?? false,
 			current_sync_id: entry.current_sync_id ?? null,
 			lastCommittedRowId: entry.lastCommittedRowId ?? null,
 			lastSyncErrors: entry.lastSyncErrors ?? [],

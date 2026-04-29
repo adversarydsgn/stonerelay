@@ -1006,23 +1006,41 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 
 		if (draft.current_phase === "phase_2" && draft.direction === "bidirectional") {
 			new Setting(wrapper)
+				.setName("Unattended writes enabled")
+				.setDesc("Templater or other automation writes to this folder. Any vault change halts and surfaces a conflict — source of truth is overridden.")
+				.addToggle((toggle) =>
+					toggle
+						.setValue(draft.templater_managed)
+						.onChange((value) => {
+							draft.templater_managed = value;
+							this.display();
+						})
+				);
+			new Setting(wrapper)
 				.setName("Source of truth")
 				.setDesc("When both sides change between syncs, this rule decides which version is kept. Manual merge surfaces conflicts in a sidebar diff view.")
-				.addDropdown((dropdown) =>
+				.addDropdown((dropdown) => {
 					dropdown
 						.addOption("notion", "Notion (Notion wins on conflict)")
 						.addOption("obsidian", "Obsidian (Vault wins on conflict)")
 						.addOption("manual_merge", "Manual merge (surface conflicts to user, don't auto-resolve)")
 						.setValue(draft.source_of_truth ?? "notion")
+						.setDisabled(draft.templater_managed)
 						.onChange((value) => {
 							draft.source_of_truth = value as SyncedDatabase["source_of_truth"];
-						})
-				);
+						});
+				});
+			if (draft.templater_managed) {
+				wrapper.createDiv({
+					cls: "setting-item-description stonerelay-templater-override-note",
+					text: "Overridden — this folder halts on all vault changes.",
+				});
+			}
 		}
 
-			new Setting(wrapper)
-				.setName("Nest files under database subfolder")
-				.setDesc(resolvedPathPreview(this.plugin.settings, draft))
+		new Setting(wrapper)
+			.setName("Nest files under database subfolder")
+			.setDesc(resolvedPathPreview(this.plugin.settings, draft))
 			.addToggle((toggle) =>
 				toggle
 					.setValue(draft.nest_under_db_name)

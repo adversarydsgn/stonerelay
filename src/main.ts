@@ -612,6 +612,7 @@ export default class NotionFreezePlugin extends Plugin {
 			bidirectional: entry.direction === "bidirectional" && !options.retryRowIds
 				? {
 					sourceOfTruth: entry.source_of_truth,
+					templaterManaged: entry.templater_managed,
 					lastSyncedAt: entry.lastSyncedAt,
 					onConflict: (conflict) => {
 						this.settings = {
@@ -1256,7 +1257,10 @@ export default class NotionFreezePlugin extends Plugin {
 		const lastSynced = Date.parse(entry.lastSyncedAt);
 		const notionChanged = Date.parse(notionEditedAt) > lastSynced;
 		const vaultChanged = file.stat.mtime > lastSynced;
-		if (!notionChanged || !vaultChanged) return null;
+		const shouldHalt = entry.templater_managed
+			? vaultChanged
+			: (notionChanged && vaultChanged);
+		if (!shouldHalt) return null;
 		return createBackgroundConflict({
 			entryId: entry.id,
 			entryType: "database",

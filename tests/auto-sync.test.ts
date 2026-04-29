@@ -23,6 +23,7 @@ function database(overrides: Partial<SyncedDatabase> = {}): SyncedDatabase {
 		source_of_truth: overrides.source_of_truth ?? "notion",
 		first_sync_completed_at: overrides.first_sync_completed_at ?? "2026-04-27T10:00:00.000Z",
 		nest_under_db_name: overrides.nest_under_db_name ?? true,
+		templater_managed: overrides.templater_managed ?? false,
 		current_sync_id: overrides.current_sync_id ?? null,
 		lastCommittedRowId: overrides.lastCommittedRowId ?? null,
 		lastSyncErrors: overrides.lastSyncErrors ?? [],

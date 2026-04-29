@@ -103,6 +103,7 @@ function database(overrides: Partial<SyncedDatabase>): SyncedDatabase {
 		source_of_truth: null,
 		first_sync_completed_at: null,
 		nest_under_db_name: false,
+		templater_managed: false,
 		current_sync_id: null,
 		lastCommittedRowId: null,
 		lastSyncErrors: [],

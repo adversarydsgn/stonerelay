@@ -14,6 +14,7 @@ export interface ConflictInput {
 	notionChanged: boolean;
 	vaultChanged: boolean;
 	sourceOfTruth: SourceOfTruth | null;
+	templaterManaged?: boolean;
 	notionEditedAt: string;
 	vaultEditedAt: string;
 	notionSnapshot: Record<string, unknown>;
@@ -31,28 +32,32 @@ export function decideBidirectionalAction(input: ConflictInput): ConflictDecisio
 	if (input.notionChanged && !input.vaultChanged) return { action: "pull" };
 	if (!input.notionChanged && input.vaultChanged) return { action: "push" };
 
+	if (input.templaterManaged || input.sourceOfTruth === "manual_merge") {
+		return {
+			action: "conflict",
+			conflict: buildConflictSnapshot(input),
+		};
+	}
 	if (input.sourceOfTruth === "obsidian") {
 		return {
 			action: "push",
 			warning: `Both sides changed for ${input.rowId}; vault wins by source_of_truth.`,
 		};
 	}
-	if (input.sourceOfTruth === "manual_merge") {
-		return {
-			action: "conflict",
-			conflict: {
-				rowId: input.rowId,
-				notionEditedAt: input.notionEditedAt,
-				vaultEditedAt: input.vaultEditedAt,
-				notionSnapshot: { ...input.notionSnapshot },
-				vaultSnapshot: { ...input.vaultSnapshot },
-				detectedAt: input.detectedAt,
-			},
-		};
-	}
 	return {
 		action: "pull",
 		warning: `Both sides changed for ${input.rowId}; Notion wins by source_of_truth.`,
+	};
+}
+
+function buildConflictSnapshot(input: ConflictInput): Conflict {
+	return {
+		rowId: input.rowId,
+		notionEditedAt: input.notionEditedAt,
+		vaultEditedAt: input.vaultEditedAt,
+		notionSnapshot: { ...input.notionSnapshot },
+		vaultSnapshot: { ...input.vaultSnapshot },
+		detectedAt: input.detectedAt,
 	};
 }
 
@@ -73,4 +78,3 @@ export function resolveManualMergeConflict(
 export function conflictCountForRows(conflicts: Conflict[], rowIds: Set<string>): number {
 	return conflicts.filter((conflict) => rowIds.has(conflict.rowId)).length;
 }
-
