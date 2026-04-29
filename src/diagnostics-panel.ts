@@ -1,4 +1,4 @@
-import { NotionFreezeSettings, SyncedDatabase } from "./types";
+import { NotionFreezeSettings, SyncError, SyncedDatabase } from "./types";
 import { evaluatePullSafety, evaluatePushSafety } from "./sync-safety";
 import { ActiveReservationSnapshot } from "./reservations";
 import { PushIntentRecovery } from "./push-intents";
@@ -21,6 +21,7 @@ export interface DatabaseDiagnosticsRow {
 	staleIdCandidateCount: number;
 	staleIdThresholdWarn: boolean;
 	backfilledFileCount: number;
+	validationIssues: ValidationDiagnosticsIssue[];
 }
 
 export interface DiagnosticsOptions {
@@ -32,6 +33,14 @@ export interface DiagnosticsOptions {
 	pushIntentRecoveries?: PushIntentRecovery[];
 	onApplyPushIntentRecovery?: (intentId: string) => void;
 	onArchivePushIntentRecovery?: (intentId: string) => void;
+	openFile?: (path: string) => void;
+}
+
+export interface ValidationDiagnosticsIssue {
+	filePath: string;
+	property: string | null;
+	severity: "error" | "warning";
+	reason: string;
 }
 
 export function buildDiagnosticsRows(
@@ -61,13 +70,14 @@ export function buildDiagnosticsRows(
 			lastPushedAt: entry.lastPushedAt,
 			lastPulledAt: entry.lastPulledAt,
 			conflictCount: settings.pendingConflicts.filter((conflict) => !conflict.entryId || conflict.entryId === entry.id).length,
-			duplicateNotionIdCount: options.duplicateNotionIdCount?.(entry) ?? 0,
-			staleIdCandidateCount,
-			staleIdThresholdWarn: staleIdCandidateCount > 5,
-			backfilledFileCount: options.backfilledFileCount?.(entry) ?? 0,
-		};
-	});
-}
+				duplicateNotionIdCount: options.duplicateNotionIdCount?.(entry) ?? 0,
+				staleIdCandidateCount,
+				staleIdThresholdWarn: staleIdCandidateCount > 5,
+				backfilledFileCount: options.backfilledFileCount?.(entry) ?? 0,
+				validationIssues: validationIssuesFromSyncErrors(entry.lastSyncErrors),
+			};
+		});
+	}
 
 export function renderDiagnosticsPanel(
 	containerEl: HTMLElement,
@@ -95,10 +105,45 @@ export function renderDiagnosticsPanel(
 		item.createEl("p", { text: `Pull readiness: ${row.pullReadiness} - ${row.pullReason}` });
 		item.createEl("p", { text: `Last push: ${row.lastPushedAt ?? "Never"} · Last pull: ${row.lastPulledAt ?? "Never"}` });
 		item.createEl("p", { text: `Conflicts: ${row.conflictCount} · Duplicate notion-id files: ${row.duplicateNotionIdCount}` });
-		item.createEl("p", {
-			text: `Stale-ID candidates: ${row.staleIdCandidateCount}${row.staleIdThresholdWarn ? " ⚠" : ""}`,
+			item.createEl("p", {
+				text: `Stale-ID candidates: ${row.staleIdCandidateCount}${row.staleIdThresholdWarn ? " ⚠" : ""}`,
+			});
+			item.createEl("p", { text: `Backfilled legacy files: ${row.backfilledFileCount}` });
+			renderValidationIssues(item, row.validationIssues, options.openFile);
+		}
+	}
+
+function renderValidationIssues(
+	container: HTMLElement,
+	issues: ValidationDiagnosticsIssue[],
+	openFile?: (path: string) => void
+): void {
+	if (issues.length === 0) return;
+	const section = container.createDiv({ cls: "stonerelay-validation-section" });
+	section.createEl("h4", { text: "Frontmatter validation" });
+	const sorted = [...issues].sort((a, b) => {
+		if (a.severity === b.severity) return a.filePath.localeCompare(b.filePath);
+		return a.severity === "error" ? -1 : 1;
+	});
+	for (const issue of sorted) {
+		const row = section.createDiv({ cls: `stonerelay-validation-row stonerelay-${issue.severity}` });
+		row.createEl("span", {
+			cls: "stonerelay-validation-icon",
+			text: issue.severity === "error" ? "✕" : "⚠",
 		});
-		item.createEl("p", { text: `Backfilled legacy files: ${row.backfilledFileCount}` });
+		const fileLink = row.createEl("a", {
+			text: issue.filePath,
+			cls: "stonerelay-validation-file",
+		});
+		fileLink.addEventListener("click", () => openFile?.(issue.filePath));
+		row.createEl("span", {
+			cls: "stonerelay-validation-prop",
+			text: issue.property ?? "—",
+		});
+		row.createEl("span", {
+			cls: "stonerelay-validation-reason",
+			text: issue.reason,
+		});
 	}
 }
 
@@ -141,6 +186,17 @@ function renderActiveOperations(panel: HTMLElement, operations: ActiveReservatio
 		row.createEl("td", { text: operation.type });
 		row.createEl("td", { text: operation.entryId });
 	}
+}
+
+function validationIssuesFromSyncErrors(errors: SyncError[]): ValidationDiagnosticsIssue[] {
+	return errors
+		.filter((error) => error.errorCode === "schema_mismatch")
+		.map((error) => ({
+			filePath: error.rowId,
+			property: error.property ?? null,
+			severity: error.severity ?? "error",
+			reason: error.error,
+		}));
 }
 
 function readiness(blockers: number, warnings: number): DiagnosticsReadiness {

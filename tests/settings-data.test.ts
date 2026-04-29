@@ -57,6 +57,7 @@ function database(overrides: Partial<SyncedDatabase> = {}): SyncedDatabase {
 		current_sync_id: overrides.current_sync_id ?? null,
 		lastCommittedRowId: overrides.lastCommittedRowId ?? null,
 		lastSyncErrors: overrides.lastSyncErrors ?? [],
+		strictFrontmatterSchema: overrides.strictFrontmatterSchema ?? false,
 		groupId: overrides.groupId ?? null,
 		autoSync: overrides.autoSync ?? "inherit",
 	};

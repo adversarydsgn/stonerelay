@@ -429,11 +429,12 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 			duplicateNotionIdCount: (entry) => this.countDuplicateNotionIds(entry),
 			backfilledFileCount: (entry) => this.plugin.getLastBackfilledFileCount(entry.id),
 			activeOperations: this.plugin.getActiveOperationSnapshots(),
-			pushIntentRecoveries: this.plugin.getPushIntentRecoveries(),
-			onApplyPushIntentRecovery: (intentId) => { void this.plugin.applyPushIntentRecovery(intentId); },
-			onArchivePushIntentRecovery: (intentId) => { void this.plugin.archivePushIntentRecovery(intentId); },
-		});
-	}
+				pushIntentRecoveries: this.plugin.getPushIntentRecoveries(),
+				onApplyPushIntentRecovery: (intentId) => { void this.plugin.applyPushIntentRecovery(intentId); },
+				onArchivePushIntentRecovery: (intentId) => { void this.plugin.archivePushIntentRecovery(intentId); },
+				openFile: (path) => { void (this.app.workspace as any).openLinkText(path, "", false); },
+			});
+		}
 
 	private countDuplicateNotionIds(entry: SyncedDatabase): number {
 		const pathModel = resolveDatabasePathModel(this.plugin.settings, entry);
@@ -1037,6 +1038,21 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 				});
 			}
 		}
+
+		new Setting(wrapper)
+			.setName("Strict frontmatter schema")
+			.setDesc(
+				"When on, malformed YAML, unknown properties, or invalid values reject the row before any Notion mutation. " +
+				"Recommended for Templater-managed folders and other generator workflows."
+			)
+			.addToggle((toggle) =>
+				toggle
+					.setValue(draft.strictFrontmatterSchema ?? false)
+					.onChange((value) => {
+						draft.strictFrontmatterSchema = value;
+						this.display();
+					})
+			);
 
 		new Setting(wrapper)
 			.setName("Nest files under database subfolder")

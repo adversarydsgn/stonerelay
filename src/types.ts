@@ -50,6 +50,8 @@ export interface SyncError {
 	direction: "pull" | "push";
 	error: string;
 	errorCode?: "notion_4xx" | "notion_5xx" | "vault_io" | "schema_mismatch" | "rate_limit" | "network";
+	severity?: "error" | "warning";
+	property?: string | null;
 	timestamp: string;
 }
 
@@ -98,6 +100,7 @@ export interface SyncedDatabase {
 	current_sync_id: string | null;
 	lastCommittedRowId: string | null;
 	lastSyncErrors: SyncError[];
+	strictFrontmatterSchema?: boolean;
 }
 
 export interface PageSyncEntry {
@@ -198,4 +201,5 @@ export interface SyncRunOptions {
 	onPushIntentCreated?: (intentId: string, notionId: string) => Promise<void>;
 	onPushIntentCommitted?: (intentId: string) => Promise<void>;
 	onAtomicWriteCommitted?: (path: string) => void;
+	strictFrontmatterSchema?: boolean;
 }

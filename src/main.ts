@@ -646,9 +646,10 @@ export default class NotionFreezePlugin extends Plugin {
 				client,
 				normalizeNotionId(entry.databaseId),
 				sourceFolder,
-				{
-					...options,
-					onPushIntentCreating: options.onPushIntentCreating ?? pushIntentLogger?.recordCreating.bind(pushIntentLogger),
+					{
+						...options,
+						strictFrontmatterSchema: entry.strictFrontmatterSchema ?? false,
+						onPushIntentCreating: options.onPushIntentCreating ?? pushIntentLogger?.recordCreating.bind(pushIntentLogger),
 					onPushIntentCreated: options.onPushIntentCreated ?? pushIntentLogger?.recordCreated.bind(pushIntentLogger),
 					onPushIntentCommitted: options.onPushIntentCommitted ?? pushIntentLogger?.recordCommitted.bind(pushIntentLogger),
 				}

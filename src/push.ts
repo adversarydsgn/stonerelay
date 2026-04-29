@@ -3,7 +3,7 @@ import {
 	DatabaseObjectResponse,
 	PageObjectResponse,
 } from "@notionhq/client/build/src/api-endpoints";
-import { App, normalizePath, TFile, TFolder } from "obsidian";
+import { App, normalizePath, parseYaml, TFile, TFolder } from "obsidian";
 import { DatabaseSyncResult, SyncRunOptions } from "./types";
 import { convertRichText } from "./block-converter";
 import { notionRequest } from "./notion-client";
@@ -11,6 +11,7 @@ import { assertNotCancelled, classifyError, commitRow } from "./sync-state";
 import { evaluateStaleNotionIdSafety, StaleNotionIdSafetyState, validatePushCandidateFiles } from "./sync-safety";
 import { modifyAtomic } from "./atomic-vault-write";
 import type { ReservationContext } from "./reservations";
+import { validateFrontmatter, ValidationIssue } from "./frontmatter-validator";
 
 const CHUNK_LIMIT = 1900;
 const INTERNAL_FRONTMATTER_KEYS = new Set([
@@ -25,6 +26,11 @@ const INTERNAL_FRONTMATTER_KEYS = new Set([
 
 type PropertySchema = Record<string, { type: string }>;
 
+export interface FrontmatterParseError {
+	kind: "yaml_syntax" | "non_object_root";
+	message: string;
+}
+
 export interface PushContext {
 	titleToPageId: Map<string, string>;
 	titleToNotionId: Map<string, string>;
@@ -37,6 +43,7 @@ interface MarkdownDocument {
 	props: Record<string, unknown>;
 	body: string;
 	title: string;
+	parseError?: FrontmatterParseError;
 }
 
 interface ExistingPage {
@@ -86,7 +93,36 @@ export async function pushDatabase(
 		throw new Error(`No title property found for "${dbTitle}".`);
 	}
 
-	const docs = await readMarkdownDocuments(app, sourceFolder, titlePropName);
+	const allDocs = await readMarkdownDocuments(app, sourceFolder, titlePropName);
+	const validationResults = allDocs.map((doc) =>
+		validateFrontmatter(doc, schema, {
+			strict: options.strictFrontmatterSchema ?? false,
+			titleProp: titlePropName,
+		})
+	);
+	const validationErrors: string[] = [];
+	const validationWarnings: string[] = [];
+	for (const result of validationResults) {
+		for (const issue of result.issues) {
+			const message = formatValidationIssue(issue);
+			if (issue.severity === "error") {
+				validationErrors.push(`${result.doc.file.path}: ${message}`);
+			} else {
+				validationWarnings.push(`${result.doc.file.path}: ${message}`);
+			}
+			options.onRowError?.({
+				rowId: result.doc.file.path,
+				direction: "push",
+				error: message,
+				errorCode: "schema_mismatch",
+				severity: issue.severity,
+				property: issue.property,
+				timestamp: new Date().toISOString(),
+			});
+		}
+	}
+	const docs = validationResults.filter((result) => result.pushable).map((result) => result.doc as MarkdownDocument);
+	const validationSkipped = allDocs.length - docs.length;
 	const existingPages = await queryAllPages(client, dataSourceId, titlePropName);
 	const ownershipIssues = validatePushCandidateFiles(databaseId, docs.map((doc) => ({
 		path: doc.file.path,
@@ -106,14 +142,14 @@ export async function pushDatabase(
 		titleToPageId: byTitle,
 		titleToNotionId: new Map(),
 		notionIdToPageId: byId,
-		warnings: [],
+		warnings: [...validationWarnings],
 	};
 
 	let created = 0;
 	let updated = 0;
 	let failed = 0;
-	let skipped = 0;
-	const errors: string[] = [];
+	let skipped = validationSkipped;
+	const errors: string[] = [...validationErrors];
 	let skippingUntilCursor = Boolean(options.startAfterRowId);
 
 	for (const doc of docs) {
@@ -189,7 +225,7 @@ export async function pushDatabase(
 	return {
 		title: dbTitle,
 		folderPath: normalizePath(sourceFolder),
-		total: docs.length,
+			total: allDocs.length,
 		created,
 		updated,
 		skipped,
@@ -336,42 +372,35 @@ export function chunkText(value: string): Array<{ type: "text"; text: { content:
 	return chunks.map((content) => ({ type: "text", text: { content } }));
 }
 
-export function parseFrontmatter(raw: string): { props: Record<string, unknown>; body: string } {
+export function parseFrontmatter(raw: string): { props: Record<string, unknown>; body: string; parseError?: FrontmatterParseError } {
 	const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
 	if (!match) return { props: {}, body: raw };
-
-	const props: Record<string, unknown> = {};
-	const lines = match[1].split(/\r?\n/);
-	let i = 0;
-	while (i < lines.length) {
-		const line = lines[i];
-		if (!line.trim()) {
-			i++;
-			continue;
-		}
-		const keyMatch = line.match(/^("([^"]*)"|([^:]+)):\s*(.*)$/);
-		if (!keyMatch) {
-			i++;
-			continue;
-		}
-		const key = (keyMatch[2] !== undefined ? keyMatch[2] : keyMatch[3]).trim();
-		const rawValue = keyMatch[4];
-		if (rawValue === "" || rawValue === undefined) {
-			const items: unknown[] = [];
-			let j = i + 1;
-			while (j < lines.length && /^\s+-\s/.test(lines[j])) {
-				items.push(parseScalar(lines[j].replace(/^\s+-\s/, "")));
-				j++;
-			}
-			props[key] = items.length > 0 ? items : "";
-			i = items.length > 0 ? j : i + 1;
-			continue;
-		}
-		props[key] = parseScalar(rawValue.trim());
-		i++;
+	const frontmatterBlock = match[1];
+	const body = match[2];
+	let parsed: unknown;
+	try {
+		parsed = parseYaml(frontmatterBlock);
+	} catch (err) {
+		return {
+			props: {},
+			body,
+			parseError: {
+				kind: "yaml_syntax",
+				message: err instanceof Error ? err.message : String(err),
+			},
+		};
 	}
-
-	return { props, body: match[2] };
+	if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+		return {
+			props: {},
+			body,
+			parseError: {
+				kind: "non_object_root",
+				message: `Frontmatter root is ${Array.isArray(parsed) ? "a sequence" : String(parsed)}; expected a mapping.`,
+			},
+		};
+	}
+	return { props: parsed as Record<string, unknown>, body };
 }
 
 async function getWritableSchema(
@@ -441,13 +470,14 @@ async function readMarkdownDocuments(
 	for (const file of app.vault.getMarkdownFiles()) {
 		if (!isPushableFile(file, normalizedFolder)) continue;
 		const raw = await app.vault.cachedRead(file);
-		const { props, body } = parseFrontmatter(raw);
-		docs.push({
-			file,
-			props,
-			body,
-			title: getDocumentTitle(file, props, body, titlePropName),
-		});
+			const { props, body, parseError } = parseFrontmatter(raw);
+			docs.push({
+				file,
+				props,
+				body,
+				title: getDocumentTitle(file, props, body, titlePropName),
+				parseError,
+			});
 	}
 	return docs;
 }
@@ -525,6 +555,10 @@ function notionIdKeys(value: string): string[] {
 
 function formatRatio(value: number): string {
 	return `${Math.round(value * 100)}%`;
+}
+
+function formatValidationIssue(issue: ValidationIssue): string {
+	return issue.property ? `${issue.property}: ${issue.reason}` : issue.reason;
 }
 
 function getReturnedPageId(value: unknown): string | null {
@@ -681,25 +715,6 @@ function yamlEscapeString(str: string): string {
 
 function escapeRegExp(value: string): string {
 	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function parseScalar(value: string): unknown {
-	const unquoted = stripQuotes(value);
-	if (unquoted === "null") return null;
-	if (unquoted === "true") return true;
-	if (unquoted === "false") return false;
-	if (/^-?\d+(\.\d+)?$/.test(unquoted)) return Number(unquoted);
-	return unquoted.replace(/\\n/g, "\n");
-}
-
-function stripQuotes(value: string): string {
-	if (
-		(value.startsWith("\"") && value.endsWith("\"")) ||
-		(value.startsWith("'") && value.endsWith("'"))
-	) {
-		return value.slice(1, -1).replace(/\\"/g, "\"").replace(/\\\\/g, "\\");
-	}
-	return value;
 }
 
 function emptyPushContext(): PushContext {

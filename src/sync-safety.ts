@@ -7,6 +7,7 @@ import {
 	validateVaultFolderPath,
 } from "./path-model";
 import { Conflict, NotionFreezeSettings, SyncError, SyncedDatabase } from "./types";
+import type { ValidationIssue } from "./frontmatter-validator";
 
 export type SafetySeverity = "blocker" | "warning";
 
@@ -18,6 +19,8 @@ export interface SafetyIssue {
 	message: string;
 	severity: SafetySeverity;
 	path?: string;
+	filePath?: string;
+	property?: string | null;
 }
 
 export interface CandidatePushFile {
@@ -181,13 +184,29 @@ export function retryDirectionForErrors(errors: Pick<SyncError, "direction">[]):
 	return errors[0].direction;
 }
 
-export function validatePushCandidateFiles(databaseId: string, files: CandidatePushFile[]): SafetyIssue[] {
+export function validatePushCandidateFiles(
+	databaseId: string,
+	files: CandidatePushFile[],
+	validationIssues: ValidationIssue[] = []
+): SafetyIssue[] {
 	const issues = mismatchedDatabaseFiles(databaseId, files).map((file) => issue(
 		"mismatched_notion_database_id",
 		`File belongs to another Notion database: ${file.path}`,
 		file.path
 	));
 	issues.push(...duplicateNotionIdIssues(files));
+	for (const validationIssue of validationIssues) {
+		issues.push({
+			code: "frontmatter_validation",
+			message: validationIssue.property
+				? `${validationIssue.property}: ${validationIssue.reason}`
+				: validationIssue.reason,
+			severity: validationIssue.severity === "error" ? "blocker" : "warning",
+			path: validationIssue.filePath,
+			filePath: validationIssue.filePath,
+			property: validationIssue.property,
+		});
+	}
 	return issues;
 }
 

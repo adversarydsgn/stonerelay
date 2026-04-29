@@ -69,6 +69,7 @@ export function migrateData(data: Partial<NotionFreezeSettings> | null): NotionF
 			current_sync_id: null,
 			lastCommittedRowId: entry.lastCommittedRowId ?? null,
 			lastSyncErrors: entry.lastSyncErrors ?? [],
+			strictFrontmatterSchema: entry.strictFrontmatterSchema ?? false,
 			errorLogFolder: entry.errorLogFolder ?? "",
 			groupId: entry.groupId ?? null,
 			autoSync: normalizeAutoSyncOverride(entry.autoSync),
@@ -351,11 +352,12 @@ export function createDatabaseEntry(entry: Partial<SyncedDatabase>): SyncedDatab
 		templater_managed: entry.templater_managed ?? false,
 		first_sync_completed_at: entry.first_sync_completed_at ?? null,
 		nest_under_db_name: entry.nest_under_db_name ?? true,
-		current_sync_id: entry.current_sync_id ?? null,
-		lastCommittedRowId: entry.lastCommittedRowId ?? null,
-		lastSyncErrors: entry.lastSyncErrors ?? [],
-	};
-}
+			current_sync_id: entry.current_sync_id ?? null,
+			lastCommittedRowId: entry.lastCommittedRowId ?? null,
+			lastSyncErrors: entry.lastSyncErrors ?? [],
+			strictFrontmatterSchema: entry.strictFrontmatterSchema ?? false,
+		};
+	}
 
 export function createPageEntry(entry: Partial<PageSyncEntry>): PageSyncEntry {
 	return {

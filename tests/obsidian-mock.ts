@@ -155,6 +155,48 @@ export function normalizePath(path: string): string {
 	return path.replace(/\\/g, "/").replace(/\/+/g, "/").replace(/\/$/, "");
 }
 
+export function parseYaml(yaml: string): unknown {
+	const text = yaml.replace(/\r\n/g, "\n");
+	if (!text.trim()) return null;
+	const lines = text.split("\n");
+	const first = lines.find((line) => line.trim() && !line.trim().startsWith("#"))?.trim() ?? "";
+	if (first.startsWith("- ")) {
+		return lines
+			.filter((line) => line.trim())
+			.map((line) => {
+				if (!/^\s*-\s+/.test(line)) throw new Error(`YAML syntax error near "${line.trim()}"`);
+				return parseYamlScalar(line.replace(/^\s*-\s+/, ""));
+			});
+	}
+	if (!first.includes(":")) {
+		return parseYamlScalar(first);
+	}
+
+	const result: Record<string, unknown> = {};
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i];
+		if (!line.trim() || line.trim().startsWith("#")) continue;
+		if (/^\s/.test(line)) throw new Error(`YAML syntax error near "${line.trim()}"`);
+		const match = line.match(/^(?:"([^"]+)"|'([^']+)'|([^:]+)):\s*(.*)$/);
+		if (!match) throw new Error(`YAML syntax error near "${line.trim()}"`);
+		const key = (match[1] ?? match[2] ?? match[3]).trim();
+		const rawValue = match[4];
+		if (rawValue === "") {
+			const items: unknown[] = [];
+			let j = i + 1;
+			while (j < lines.length && /^\s+-\s+/.test(lines[j])) {
+				items.push(parseYamlScalar(lines[j].replace(/^\s+-\s+/, "")));
+				j++;
+			}
+			result[key] = items.length > 0 ? items : null;
+			i = items.length > 0 ? j - 1 : i;
+			continue;
+		}
+		result[key] = parseYamlScalar(rawValue.trim());
+	}
+	return result;
+}
+
 export function addIcon(): void {}
 
 export function setIcon(el: { setAttribute?: (name: string, value: string) => void }, icon: string): void {
@@ -186,6 +228,34 @@ function textComponent() {
 		},
 	};
 	return component;
+}
+
+function parseYamlScalar(value: string): unknown {
+	if (value === "[]") return [];
+	if (value.startsWith("[") && value.endsWith("]")) {
+		const inner = value.slice(1, -1).trim();
+		if (!inner) return [];
+		return inner.split(",").map((item) => parseYamlScalar(item.trim()));
+	}
+	if (value === "null" || value === "~") return null;
+	if (value === "true") return true;
+	if (value === "false") return false;
+	if (/^-?\d+(\.\d+)?$/.test(value)) return Number(value);
+	if (value.startsWith("\"")) {
+		if (!value.endsWith("\"") || value.length === 1) throw new Error("YAML syntax error: unterminated quoted scalar");
+		return value.slice(1, -1)
+			.replace(/\\n/g, "\n")
+			.replace(/\\"/g, "\"")
+			.replace(/\\\\/g, "\\");
+	}
+	if (value.startsWith("'")) {
+		if (!value.endsWith("'") || value.length === 1) throw new Error("YAML syntax error: unterminated quoted scalar");
+		return value.slice(1, -1).replace(/''/g, "'");
+	}
+	if ((value.match(/"/g)?.length ?? 0) % 2 === 1 || (value.match(/'/g)?.length ?? 0) % 2 === 1) {
+		throw new Error("YAML syntax error: unterminated quoted scalar");
+	}
+	return value;
 }
 
 function createMockElement(tag: string): any {
