@@ -8,6 +8,7 @@ import { TFile, TFolder } from "obsidian";
 import NotionFreezePlugin from "../../src/main";
 import { createNotionClient, notionRequest } from "../../src/notion-client";
 import * as notionClientModule from "../../src/notion-client";
+import * as notionClientObsidianModule from "../../src/notion-client-obsidian";
 import { parseFrontmatter, pushDatabase } from "../../src/push";
 import { refreshDatabase } from "../../src/database-freezer";
 import { ReservationManager } from "../../src/reservations";
@@ -337,7 +338,7 @@ describe("post-v0.9.10-substrate-lock", () => {
 		const app = fileBackedApp([filePath]);
 		const entry = syncedDatabase(entity);
 		const liveClient = await initClient();
-		const createClient = vi.spyOn(notionClientModule, "createNotionClient").mockReturnValue(liveClient);
+		const createClient = vi.spyOn(notionClientObsidianModule, "createObsidianNotionClient").mockReturnValue(liveClient);
 		const conflictResolver = vi.fn();
 		plugin.app = app as never;
 		plugin.manifest = { id: "stonerelay", version: "0.9.10" } as never;

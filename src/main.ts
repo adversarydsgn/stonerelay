@@ -2,7 +2,8 @@ import { addIcon, App, Modal, Notice, Plugin, Setting, SuggestModal, normalizePa
 import { AtomicWriteEvent, Conflict, NotionFreezeSettings, DatabaseSyncResult, PageSyncEntry, SyncError, SyncRunOptions, SyncRunType, SyncedDatabase } from "./types";
 import { NotionFreezeSettingTab } from "./settings";
 import { FreezeModal, FrozenDatabase } from "./freeze-modal";
-import { createNotionClient, normalizeNotionId, notionRequest } from "./notion-client";
+import { normalizeNotionId, notionRequest } from "./notion-client";
+import { createObsidianNotionClient } from "./notion-client-obsidian";
 import { freshDatabaseImport, refreshDatabase } from "./database-freezer";
 import { migrateData, resolveErrorLogFolder, syncAll, updateDatabase, updatePage } from "./settings-data";
 import { inspectStaleNotionIdSkips, pushDatabase } from "./push";
@@ -407,7 +408,7 @@ export default class NotionFreezePlugin extends Plugin {
 
 	private async confirmStaleIdThresholdIfNeeded(entry: SyncedDatabase, sourceFolder: string): Promise<boolean> {
 		if (!this.settings.apiKey) return true;
-		const client = createNotionClient(this.settings.apiKey);
+		const client = createObsidianNotionClient(this.settings.apiKey);
 		const state = await inspectStaleNotionIdSkips(
 			this.app,
 			client,
@@ -477,7 +478,7 @@ export default class NotionFreezePlugin extends Plugin {
 			new Notice("Notion API key not set. Configure in plugin settings.");
 			throw new Error("Notion API key not set.");
 		}
-		const client = createNotionClient(this.settings.apiKey);
+		const client = createObsidianNotionClient(this.settings.apiKey);
 		const folder = outputFolder?.trim() || this.settings.defaultOutputFolder || "_relay";
 		const reservation = await this.reservations.acquire({
 			entryId: `page:${pageId}`,
@@ -549,7 +550,7 @@ export default class NotionFreezePlugin extends Plugin {
 		});
 		await this.saveSettings();
 		try {
-			const client = createNotionClient(this.settings.apiKey);
+			const client = createObsidianNotionClient(this.settings.apiKey);
 			const result = await refreshStandalonePage(this.app, client, entry, {
 				signal: reservation.signal,
 				context: reservation.context,
@@ -635,7 +636,7 @@ export default class NotionFreezePlugin extends Plugin {
 			throw new Error("Notion API key not set.");
 		}
 
-		const client = createNotionClient(this.settings.apiKey);
+		const client = createObsidianNotionClient(this.settings.apiKey);
 		const notice = new Notice(`Pushing "${entry.name}" to Notion...`, 0);
 		const pushIntentLogger = options.context ? this.createPushIntentLogger(options.context.id) : null;
 		try {
@@ -738,7 +739,7 @@ export default class NotionFreezePlugin extends Plugin {
 			return this.refreshFrozenDatabase(existing, lastSyncedAt, options);
 		}
 
-		const client = createNotionClient(this.settings.apiKey);
+		const client = createObsidianNotionClient(this.settings.apiKey);
 		const notice = new Notice("Querying database from Notion...", 0);
 		try {
 			const result = await freshDatabaseImport(
@@ -785,7 +786,7 @@ export default class NotionFreezePlugin extends Plugin {
 			throw new Error("Notion API key not set.");
 		}
 
-		const client = createNotionClient(this.settings.apiKey);
+		const client = createObsidianNotionClient(this.settings.apiKey);
 		const notice = new Notice(`Querying "${db.title}" from Notion...`, 0);
 		try {
 			const result = await refreshDatabase(
@@ -1070,7 +1071,7 @@ export default class NotionFreezePlugin extends Plugin {
 			policy: "manual",
 		});
 		try {
-			const client = createNotionClient(this.settings.apiKey);
+			const client = createObsidianNotionClient(this.settings.apiKey);
 			await notionRequest(() => client.pages.update({
 				page_id: recovery.notionId,
 				archived: true,

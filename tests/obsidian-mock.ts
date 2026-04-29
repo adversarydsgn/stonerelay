@@ -62,18 +62,36 @@ export class SuggestModal<T> extends Modal {
 
 export class ButtonComponent {
 	buttonEl = createMockElement("button");
-	setButtonText(_text: string): this { return this; }
+	setButtonText(text: string): this {
+		this.buttonEl.textContent = text;
+		return this;
+	}
+	setIcon(_icon: string): this { return this; }
 	setCta(): this { return this; }
 	setWarning(): this { return this; }
-	setDisabled(_disabled: boolean): this { return this; }
-	onClick(_callback: () => void): this { return this; }
+	setDisabled(disabled: boolean): this {
+		this.buttonEl.disabled = disabled;
+		return this;
+	}
+	onClick(callback: () => void): this {
+		this.buttonEl.onClickEvent(callback);
+		return this;
+	}
 }
 
 export class Setting {
 	settingEl = createMockElement("div");
+	descEl = createMockElement("div");
+	controlEl = createMockElement("div");
 	constructor(public containerEl: any) {}
-	setName(_name: string): this { return this; }
-	setDesc(_desc: string): this { return this; }
+	setName(name: string): this {
+		this.settingEl.createEl("div", { text: name });
+		return this;
+	}
+	setDesc(desc: string): this {
+		this.descEl.setText(desc);
+		return this;
+	}
 	addText(_callback: (component: any) => void): this {
 		_callback(textComponent());
 		return this;
@@ -91,7 +109,10 @@ export class Setting {
 		return this;
 	}
 	addButton(_callback: (component: ButtonComponent) => void): this {
-		_callback(new ButtonComponent());
+		const button = new ButtonComponent();
+		_callback(button);
+		this.controlEl.children.push(button.buttonEl);
+		this.containerEl.children?.push(button.buttonEl);
 		return this;
 	}
 }
@@ -113,13 +134,22 @@ export async function requestUrl(): Promise<never> {
 function textComponent() {
 	const component = {
 		inputEl: createMockElement("input"),
-		setPlaceholder: () => component,
-		setValue: () => component,
+		setPlaceholder: (placeholder: string) => {
+			component.inputEl.placeholder = placeholder;
+			return component;
+		},
+		setValue: (value: string) => {
+			component.inputEl.value = value;
+			return component;
+		},
 		then: (callback: (value: typeof component) => void) => {
 			callback(component);
 			return component;
 		},
-		onChange: () => component,
+		onChange: (callback: (value: string) => void) => {
+			component.inputEl.onChange = callback;
+			return component;
+		},
 	};
 	return component;
 }
@@ -129,11 +159,21 @@ function createMockElement(tag: string): any {
 		tag,
 		children: [] as any[],
 		textContent: "",
-		classList: { add: () => undefined },
+		listeners: new Map<string, () => void>(),
+		classList: { add: () => undefined, remove: () => undefined },
 		addClass: () => undefined,
+		removeClass: () => undefined,
 		hide: () => undefined,
 		setAttribute: () => undefined,
-		addEventListener: () => undefined,
+		addEventListener(event: string, callback: () => void) {
+			this.listeners.set(event, callback);
+		},
+		onClickEvent(callback: () => void) {
+			this.listeners.set("click", callback);
+		},
+		setText(text: string) {
+			this.textContent = text;
+		},
 		createDiv(options?: { cls?: string }) {
 			const child = createMockElement("div");
 			child.cls = options?.cls;

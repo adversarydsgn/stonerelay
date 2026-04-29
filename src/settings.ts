@@ -1,7 +1,7 @@
 import { App, ButtonComponent, Modal, Notice, PluginSettingTab, Setting, TFile, TFolder, normalizePath, setIcon } from "obsidian";
 import NotionFreezePlugin from "./main";
 import { AutoSyncOverride, Conflict, PageSyncEntry, SyncDirection, SyncGroup, SyncedDatabase } from "./types";
-import { createNotionClient } from "./notion-client";
+import { createObsidianNotionClient } from "./notion-client-obsidian";
 import { buildBratStatus, BratStatusState, fetchLatestGithubRelease, getInstalledPluginVersion, renderBratStatusPanel, unavailableBratStatus } from "./brat-status";
 import { renderDiagnosticsPanel } from "./diagnostics-panel";
 import {
@@ -1086,7 +1086,7 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 			renderStatus();
 			updateTestButton();
 
-			const client = createNotionClient(this.plugin.settings.apiKey);
+			const client = createObsidianNotionClient(this.plugin.settings.apiKey);
 			const result = await fetchDatabaseMetadata(databaseId, client);
 			if (requestId !== state.requestId) return;
 

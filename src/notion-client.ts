@@ -2,31 +2,17 @@ import { Client, LogLevel } from "@notionhq/client";
 import type { ClientOptions } from "@notionhq/client/build/src/Client";
 
 export interface NotionClientOptions {
-	fetch?: ClientOptions["fetch"];
+	fetch: NonNullable<ClientOptions["fetch"]>;
 }
 
-export function createNotionClient(apiKey: string, options: NotionClientOptions = {}): Client {
+export function createNotionClient(apiKey: string, options?: NotionClientOptions): Client {
+	if (!options?.fetch) {
+		throw new Error("createNotionClient requires options.fetch; use the host-bound client wrapper in plugin code, or pass a Node fetch in scripts");
+	}
 	return new Client({
 		auth: apiKey,
 		logLevel: LogLevel.ERROR,
-		fetch: options.fetch ?? obsidianFetch,
-	});
-}
-
-async function obsidianFetch(url: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-	const { requestUrl } = await import("obsidian");
-	const urlString = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
-	const response = await requestUrl({
-		url: urlString,
-		method: init?.method || "GET",
-		headers: init?.headers as Record<string, string>,
-		body: init?.body as string | ArrayBuffer,
-		throw: false,
-	});
-	return new Response(response.arrayBuffer, {
-		status: response.status,
-		statusText: response.status.toString(),
-		headers: new Headers(response.headers),
+		fetch: options.fetch,
 	});
 }
 
