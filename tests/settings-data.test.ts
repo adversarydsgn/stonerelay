@@ -110,10 +110,12 @@ describe("settings data migration", () => {
 			databaseId: rawId,
 			direction: "pull",
 			lastPulledAt: null,
-			lastPushedAt: null,
-			groupId: null,
-			autoSync: "inherit",
-		});
+				lastPushedAt: null,
+				groupId: null,
+				autoSync: "inherit",
+				canonical_id_property: null,
+				last_observed_unique_id_max: null,
+			});
 		expect(migrated.schemaVersion).toBe(7);
 	});
 

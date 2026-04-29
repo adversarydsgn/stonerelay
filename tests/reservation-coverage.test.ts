@@ -33,10 +33,12 @@ describe("reservation and atomic-write coverage audit", () => {
 		expect(actions).toContain("Reservation released");
 		expect(actions).toContain("Reservation rejected (key conflict)");
 		expect(actions).toContain("Reservation queued (batch op)");
-		expect(actions).toContain("Push intent recorded");
-		expect(actions).toContain("Push intent recovered (startup)");
-		expect(actions).toContain("Atomic write committed");
-	});
+			expect(actions).toContain("Push intent recorded");
+			expect(actions).toContain("Push intent recovered (startup)");
+			expect(actions).toContain("Atomic write committed");
+			expect(actions).toContain("Vault canonical mirror written (Push create)");
+			expect(actions).toContain("Vault canonical lockfile read");
+		});
 
 	it("behaviorally blocks direct push helper calls before Notion access without a reservation", async () => {
 		const client = { databases: { retrieve: vi.fn() } };

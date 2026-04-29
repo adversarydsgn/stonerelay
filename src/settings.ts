@@ -46,6 +46,7 @@ import {
 } from "./settings-ux";
 import { resolveManualMergeConflict } from "./conflict-resolution";
 import { isSafeVaultRelativePath, pathStartsWith, resolveDatabasePathModel } from "./path-model";
+import { buildVaultCanonicalDiagnosticsRow, countAwaitingIdStamp, lockfilePath, parseNextId, VaultCanonicalLockfileState } from "./vault-canonical";
 
 interface EditState {
 	input: string;
@@ -428,15 +429,47 @@ export class NotionFreezeSettingTab extends PluginSettingTab {
 			staleIdCandidateCount: (_entry, folder) => this.countStaleIdCandidates(folder),
 			duplicateNotionIdCount: (entry) => this.countDuplicateNotionIds(entry),
 			backfilledFileCount: (entry) => this.plugin.getLastBackfilledFileCount(entry.id),
-			activeOperations: this.plugin.getActiveOperationSnapshots(),
-				pushIntentRecoveries: this.plugin.getPushIntentRecoveries(),
+				activeOperations: this.plugin.getActiveOperationSnapshots(),
+				vaultCanonicalRows: this.buildVaultCanonicalRows(),
+					pushIntentRecoveries: this.plugin.getPushIntentRecoveries(),
 				onApplyPushIntentRecovery: (intentId) => { void this.plugin.applyPushIntentRecovery(intentId); },
 				onArchivePushIntentRecovery: (intentId) => { void this.plugin.archivePushIntentRecovery(intentId); },
 				openFile: (path) => { void (this.app.workspace as any).openLinkText(path, "", false); },
 			});
+			}
+
+		private buildVaultCanonicalRows() {
+			const adapter = this.app.vault.adapter as { files?: Map<string, string> } | undefined;
+			const fileMap = adapter?.files;
+			return this.plugin.settings.databases.flatMap((entry) => {
+				const folder = resolveDatabasePathModel(this.plugin.settings, entry).pushSourceFolder;
+				const nextPath = lockfilePath(folder, ".next-id");
+				const lockPath = lockfilePath(folder, ".next-id.lock");
+				const raw = fileMap?.get(nextPath) ?? null;
+				const parsed = parseNextId(raw);
+				const state: VaultCanonicalLockfileState = {
+					nextId: parsed.value,
+					nextIdRaw: raw,
+					nextIdPresent: raw !== null,
+					nextIdParseError: parsed.error,
+					lockPresent: fileMap?.has(lockPath) ?? false,
+					nextIdMtime: null,
+				};
+				const files = this.app.vault.getMarkdownFiles().map((file) => ({
+					path: file.path,
+					frontmatter: this.app.metadataCache.getFileCache(file)?.frontmatter ?? {},
+				}));
+				const row = buildVaultCanonicalDiagnosticsRow({
+					entry,
+					folderPath: folder,
+					state,
+					awaitingStampCount: countAwaitingIdStamp(files, folder),
+				});
+				return row ? [row] : [];
+			});
 		}
 
-	private countDuplicateNotionIds(entry: SyncedDatabase): number {
+		private countDuplicateNotionIds(entry: SyncedDatabase): number {
 		const pathModel = resolveDatabasePathModel(this.plugin.settings, entry);
 		const seen = new Set<string>();
 		const duplicates = new Set<string>();

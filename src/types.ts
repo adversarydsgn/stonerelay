@@ -95,13 +95,15 @@ export interface SyncedDatabase {
 	initial_seed_direction: "pull" | "push" | null;
 	source_of_truth: SourceOfTruth | null;
 	templater_managed: boolean;
-	first_sync_completed_at: string | null;
-	nest_under_db_name: boolean;
-	current_sync_id: string | null;
-	lastCommittedRowId: string | null;
-	lastSyncErrors: SyncError[];
-	strictFrontmatterSchema?: boolean;
-}
+		first_sync_completed_at: string | null;
+		nest_under_db_name: boolean;
+		current_sync_id: string | null;
+		lastCommittedRowId: string | null;
+		lastSyncErrors: SyncError[];
+		strictFrontmatterSchema?: boolean;
+		canonical_id_property: string | null;
+		last_observed_unique_id_max: number | null;
+	}
 
 export interface PageSyncEntry {
 	id: string;
@@ -137,6 +139,8 @@ export interface PageWriteOptions {
 	databaseId: string;
 	context?: ReservationContext;
 	onAtomicWriteCommitted?: (path: string) => void;
+	canonicalIdProperty?: string | null;
+	frontmatterOverrides?: Record<string, unknown>;
 }
 
 export interface StandalonePageWriteOptions {
@@ -165,6 +169,10 @@ export interface DatabaseSyncResult {
 	errors: string[];
 	warnings?: string[];
 	backfilled?: number;
+	observedUniqueIdMax?: number | null;
+	awaitingIdStamp?: number;
+	adoptedMirrorIds?: number;
+	sequenceLag?: boolean;
 }
 
 export interface AtomicWriteEvent {
@@ -203,4 +211,5 @@ export interface SyncRunOptions {
 	onPushIntentCommitted?: (intentId: string) => Promise<void>;
 	onAtomicWriteCommitted?: (path: string) => void;
 	strictFrontmatterSchema?: boolean;
+	canonicalIdProperty?: string | null;
 }

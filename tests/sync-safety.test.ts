@@ -60,7 +60,7 @@ function settings(databases: SyncedDatabase[]): NotionFreezeSettings {
 
 describe("sync safety gates", () => {
 	it("keeps the §6 user-action audit complete", () => {
-		expect(USER_ACTION_AUDIT).toHaveLength(31);
+			expect(USER_ACTION_AUDIT).toHaveLength(38);
 		expect(USER_ACTION_AUDIT.every((row) => row.pathHelper && row.safetyGate)).toBe(true);
 		expect(USER_ACTION_AUDIT.map((row) => row.action)).toContain("Apply conflict resolution: Keep Vault");
 	});

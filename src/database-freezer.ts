@@ -15,6 +15,7 @@ import { FrozenDatabase } from "./freeze-modal";
 import { buildBaseFile, inferDefaultViews } from "./view-inference";
 import { modifyAtomic, writeAtomic } from "./atomic-vault-write";
 import type { ReservationContext } from "./reservations";
+import { extractCanonicalMirrorId, maxUniqueIdNumber, readVaultCanonicalState } from "./vault-canonical";
 
 export async function freshDatabaseImport(
 	app: App,
@@ -63,12 +64,20 @@ export async function freshDatabaseImport(
 	// Query all entries
 	onProgress?.({ phase: "querying" });
 	const entries = await queryAllEntries(client, dataSourceId);
+	const canonicalState = await readVaultCanonicalState(app.vault.adapter as never, folderPath);
+	const observedUniqueIdMax = maxUniqueIdNumber(entries);
+	const sequenceLag = observedUniqueIdMax !== null && canonicalState.nextId !== null && observedUniqueIdMax >= canonicalState.nextId;
 
 	const total = entries.length;
 	let created = 0;
 	let updated = 0;
 	let failed = 0;
 	const errors: string[] = [];
+	const warnings: string[] = sequenceLag
+		? ["Vault .next-id may be behind Notion's unique_id counter. Consider re-running bootstrap migration."]
+		: [];
+	let awaitingIdStamp = 0;
+	let adoptedMirrorIds = 0;
 
 	try {
 		await generateBaseFile(app, dataSource, folderPath, databaseId, entries, undefined, options);
@@ -101,16 +110,18 @@ export async function freshDatabaseImport(
 		onProgress?.({ phase: "importing", current, total });
 
 		try {
-			const result = await commitRow(entry.id, () =>
-				writeDatabaseEntry(app, {
-					client,
-					page: entry,
-					outputFolder: folderPath,
-					databaseId,
-					context: options.context,
-					onAtomicWriteCommitted: options.onAtomicWriteCommitted,
-				}),
-				options.onRowCommitted
+				const result = await commitRow(entry.id, () =>
+					writeDatabaseEntry(app, {
+						client,
+						page: entry,
+						outputFolder: folderPath,
+						databaseId,
+						context: options.context,
+						onAtomicWriteCommitted: options.onAtomicWriteCommitted,
+						canonicalIdProperty: options.canonicalIdProperty ?? null,
+						frontmatterOverrides: frontmatterOverridesForNotionOnly(entry, options.canonicalIdProperty ?? null, warnings, () => adoptedMirrorIds++, () => awaitingIdStamp++),
+					}),
+					options.onRowCommitted
 			);
 
 			if (result.status === "created") created++;
@@ -139,11 +150,16 @@ export async function freshDatabaseImport(
 		created,
 		updated,
 		skipped: 0,
-		deleted: 0,
-		failed,
-		errors,
-	};
-}
+			deleted: 0,
+			failed,
+			errors,
+			warnings,
+			observedUniqueIdMax,
+			awaitingIdStamp,
+			adoptedMirrorIds,
+			sequenceLag,
+		};
+	}
 
 export async function refreshDatabase(
 	app: App,
@@ -177,6 +193,9 @@ export async function refreshDatabase(
 
 	// Query all entries
 	const entries = await queryAllEntries(client, dataSourceId);
+	const canonicalState = await readVaultCanonicalState(app.vault.adapter as never, db.folderPath);
+	const observedUniqueIdMax = maxUniqueIdNumber(entries);
+	const sequenceLag = observedUniqueIdMax !== null && canonicalState.nextId !== null && observedUniqueIdMax >= canonicalState.nextId;
 
 	// Diff pass
 	onProgress?.({ phase: "diffing" });
@@ -218,8 +237,13 @@ export async function refreshDatabase(
 	let updated = 0;
 	let failed = 0;
 	const errors: string[] = [];
-	const warnings: string[] = [...localFiles.duplicateWarnings];
+	const warnings: string[] = [
+		...localFiles.duplicateWarnings,
+		...(sequenceLag ? ["Vault .next-id may be behind Notion's unique_id counter. Consider re-running bootstrap migration."] : []),
+	];
 	let backfilled = 0;
+	let awaitingIdStamp = 0;
+	let adoptedMirrorIds = 0;
 
 	for (const { entry, file } of legacyBackfills) {
 		try {
@@ -300,16 +324,20 @@ export async function refreshDatabase(
 					continue;
 				}
 			}
-			const result = await commitRow(entry.id, () =>
-				writeDatabaseEntry(app, {
-					client,
-					page: entry,
-					outputFolder: db.folderPath,
-					databaseId: db.databaseId,
-					context: options.context,
-					onAtomicWriteCommitted: options.onAtomicWriteCommitted,
-				}),
-				options.onRowCommitted
+				const result = await commitRow(entry.id, () =>
+					writeDatabaseEntry(app, {
+						client,
+						page: entry,
+						outputFolder: db.folderPath,
+						databaseId: db.databaseId,
+						context: options.context,
+						onAtomicWriteCommitted: options.onAtomicWriteCommitted,
+						canonicalIdProperty: options.canonicalIdProperty ?? null,
+						frontmatterOverrides: effectiveLocalFile
+							? undefined
+							: frontmatterOverridesForNotionOnly(entry, options.canonicalIdProperty ?? null, warnings, () => adoptedMirrorIds++, () => awaitingIdStamp++),
+					}),
+					options.onRowCommitted
 			);
 
 			if (result.status === "created") created++;
@@ -356,9 +384,32 @@ export async function refreshDatabase(
 		deleted,
 		failed,
 		errors,
-		warnings,
-		backfilled,
-	};
+			warnings,
+			backfilled,
+			observedUniqueIdMax,
+			awaitingIdStamp,
+			adoptedMirrorIds,
+			sequenceLag,
+		};
+	}
+
+function frontmatterOverridesForNotionOnly(
+	entry: PageObjectResponse,
+	canonicalIdProperty: string | null,
+	warnings: string[],
+	onAdopted: () => void,
+	onAwaiting: () => void
+): Record<string, unknown> | undefined {
+	if (!canonicalIdProperty) return undefined;
+	const mirrorId = extractCanonicalMirrorId(entry, canonicalIdProperty);
+	if (mirrorId) {
+		warnings.push(`Adopted Notion-side mirror ID for row ${entry.id}.`);
+		onAdopted();
+		return { ID: mirrorId };
+	}
+	warnings.push(`Materialized Notion-only row ${entry.id}; awaiting ID stamp.`);
+	onAwaiting();
+	return undefined;
 }
 
 function vaultChangedSince(file: TFile, lastSyncedAt?: string | null): boolean {

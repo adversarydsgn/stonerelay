@@ -28,7 +28,7 @@ export interface SyncAllResult {
 export type SyncDatabaseRunner = (
 	entry: SyncedDatabase,
 	outputFolder: string
-) => Promise<{ failed: number; errors: string[] } | void>;
+) => Promise<{ failed: number; errors: string[]; observedUniqueIdMax?: number | null } | void>;
 
 export type SyncMode = "pull" | "push";
 
@@ -68,11 +68,13 @@ export function migrateData(data: Partial<NotionFreezeSettings> | null): NotionF
 			nest_under_db_name: entry.nest_under_db_name ?? true,
 			current_sync_id: null,
 			lastCommittedRowId: entry.lastCommittedRowId ?? null,
-			lastSyncErrors: entry.lastSyncErrors ?? [],
-			strictFrontmatterSchema: entry.strictFrontmatterSchema ?? false,
-			errorLogFolder: entry.errorLogFolder ?? "",
-			groupId: entry.groupId ?? null,
-			autoSync: normalizeAutoSyncOverride(entry.autoSync),
+				lastSyncErrors: entry.lastSyncErrors ?? [],
+				strictFrontmatterSchema: entry.strictFrontmatterSchema ?? false,
+				canonical_id_property: entry.canonical_id_property ?? null,
+				last_observed_unique_id_max: entry.last_observed_unique_id_max ?? null,
+				errorLogFolder: entry.errorLogFolder ?? "",
+				groupId: entry.groupId ?? null,
+				autoSync: normalizeAutoSyncOverride(entry.autoSync),
 		});
 	});
 	migrated.pages = (migrated.pages ?? []).map((entry) => createPageEntry(entry));
@@ -90,12 +92,14 @@ export function migrateData(data: Partial<NotionFreezeSettings> | null): NotionF
 		migrated.schemaVersion = 6;
 	}
 	if (migrated.schemaVersion < 7) {
-		migrated.databases = (migrated.databases ?? []).map((entry) => ({
-			...entry,
-			templater_managed: entry.templater_managed ?? false,
-		}));
-		migrated.schemaVersion = 7;
-	}
+			migrated.databases = (migrated.databases ?? []).map((entry) => ({
+				...entry,
+				templater_managed: entry.templater_managed ?? false,
+				canonical_id_property: entry.canonical_id_property ?? null,
+				last_observed_unique_id_max: entry.last_observed_unique_id_max ?? null,
+			}));
+			migrated.schemaVersion = 7;
+		}
 	migrated.active_reservations = [];
 
 	return migrated;
@@ -321,9 +325,12 @@ export async function syncAll(
 			lastPulledAt: mode === "pull" ? now : entry.lastPulledAt,
 			lastPushedAt: mode === "push" ? now : entry.lastPushedAt,
 			lastSyncStatus: status,
-			lastSyncError: errors.length > 0 ? errors.map((error) => error.error).join("\n").slice(0, 200) : undefined,
-			lastSyncErrors: errors,
-		}, status, errors, "full", now));
+				lastSyncError: errors.length > 0 ? errors.map((error) => error.error).join("\n").slice(0, 200) : undefined,
+				lastSyncErrors: errors,
+				last_observed_unique_id_max: mode === "pull"
+					? result?.observedUniqueIdMax ?? entry.last_observed_unique_id_max ?? null
+					: entry.last_observed_unique_id_max ?? null,
+			}, status, errors, "full", now));
 	}
 
 	notice?.(`Sync complete: ${ok} ok, ${errored} errored${cancelled > 0 ? `, ${cancelled} cancelled` : ""}.`);
@@ -353,11 +360,13 @@ export function createDatabaseEntry(entry: Partial<SyncedDatabase>): SyncedDatab
 		first_sync_completed_at: entry.first_sync_completed_at ?? null,
 		nest_under_db_name: entry.nest_under_db_name ?? true,
 			current_sync_id: entry.current_sync_id ?? null,
-			lastCommittedRowId: entry.lastCommittedRowId ?? null,
-			lastSyncErrors: entry.lastSyncErrors ?? [],
-			strictFrontmatterSchema: entry.strictFrontmatterSchema ?? false,
-		};
-	}
+				lastCommittedRowId: entry.lastCommittedRowId ?? null,
+				lastSyncErrors: entry.lastSyncErrors ?? [],
+				strictFrontmatterSchema: entry.strictFrontmatterSchema ?? false,
+				canonical_id_property: entry.canonical_id_property ?? null,
+				last_observed_unique_id_max: entry.last_observed_unique_id_max ?? null,
+			};
+		}
 
 export function createPageEntry(entry: Partial<PageSyncEntry>): PageSyncEntry {
 	return {

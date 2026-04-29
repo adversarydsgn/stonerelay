@@ -38,7 +38,10 @@ export async function writeDatabaseEntry(
 	};
 
 	// Map database entry properties to frontmatter
-	mapPropertiesToFrontmatter(page.properties, frontmatter);
+	mapPropertiesToFrontmatter(page.properties, frontmatter, {
+		canonicalIdProperty: options.canonicalIdProperty ?? null,
+	});
+	Object.assign(frontmatter, options.frontmatterOverrides ?? {});
 
 	const content = buildFileContent(frontmatter, markdown);
 
@@ -187,7 +190,8 @@ function utf8ByteLength(value: string): number {
 
 function mapPropertiesToFrontmatter(
 	properties: PageObjectResponse["properties"],
-	frontmatter: Record<string, unknown>
+	frontmatter: Record<string, unknown>,
+	options: { canonicalIdProperty?: string | null } = {}
 ): void {
 	for (const [key, prop] of Object.entries(properties)) {
 		switch (prop.type) {
@@ -263,7 +267,11 @@ function mapPropertiesToFrontmatter(
 					frontmatter[key] = prop.last_edited_time;
 					break;
 				case "unique_id": {
-					frontmatter[key] = extractUniqueId(prop) ?? null;
+					if (options.canonicalIdProperty) {
+						frontmatter["notion-unique-id"] = extractUniqueId(prop) ?? null;
+					} else {
+						frontmatter[key] = extractUniqueId(prop) ?? null;
+					}
 					break;
 				}
 			case "formula": {

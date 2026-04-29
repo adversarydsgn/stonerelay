@@ -256,11 +256,12 @@ export default class NotionFreezePlugin extends Plugin {
 				lastSyncedAt: now,
 				lastPulledAt: now,
 				lastSyncStatus: status,
-				lastSyncError: errors.length > 0 ? errors.map((error) => error.error).join("\n").slice(0, 200) : undefined,
-				lastSyncErrors: errors,
-				lastCommittedRowId: run.lastCommittedRowId,
-				current_sync_id: null,
-			}, status, errors, run.type, now));
+					lastSyncError: errors.length > 0 ? errors.map((error) => error.error).join("\n").slice(0, 200) : undefined,
+					lastSyncErrors: errors,
+					lastCommittedRowId: run.lastCommittedRowId,
+					last_observed_unique_id_max: result.observedUniqueIdMax ?? entry.last_observed_unique_id_max ?? null,
+					current_sync_id: null,
+				}, status, errors, run.type, now));
 			if (status === "partial") {
 				await this.writeSyncErrorLog(entry, "pull", now, errors, run.lastCommittedRowId);
 			}
@@ -345,11 +346,12 @@ export default class NotionFreezePlugin extends Plugin {
 				lastSyncedAt: now,
 				lastPushedAt: now,
 				lastSyncStatus: status,
-				lastSyncError: errors.length > 0 ? errors.map((error) => error.error).join("\n").slice(0, 200) : undefined,
-				lastSyncErrors: errors,
-				lastCommittedRowId: run.lastCommittedRowId,
-				current_sync_id: null,
-			}, status, errors, run.type, now));
+					lastSyncError: errors.length > 0 ? errors.map((error) => error.error).join("\n").slice(0, 200) : undefined,
+					lastSyncErrors: errors,
+					lastCommittedRowId: run.lastCommittedRowId,
+					last_observed_unique_id_max: result.observedUniqueIdMax ?? entry.last_observed_unique_id_max ?? null,
+					current_sync_id: null,
+				}, status, errors, run.type, now));
 			if (status === "partial") {
 				await this.writeSyncErrorLog(entry, "push", now, errors, run.lastCommittedRowId);
 			}
@@ -605,10 +607,11 @@ export default class NotionFreezePlugin extends Plugin {
 		outputFolder: string,
 		options: SyncRunOptions = {}
 	): Promise<DatabaseSyncResult> {
-		this.requireActiveReservation(options.context, "configured database pull");
-		return this.syncDatabase(entry.databaseId, outputFolder, entry.lastSyncedAt, entry, {
-			...options,
-			bidirectional: entry.direction === "bidirectional" && !options.retryRowIds
+			this.requireActiveReservation(options.context, "configured database pull");
+			return this.syncDatabase(entry.databaseId, outputFolder, entry.lastSyncedAt, entry, {
+				...options,
+				canonicalIdProperty: entry.canonical_id_property ?? null,
+				bidirectional: entry.direction === "bidirectional" && !options.retryRowIds
 				? {
 					sourceOfTruth: entry.source_of_truth,
 					templaterManaged: entry.templater_managed,
@@ -645,10 +648,23 @@ export default class NotionFreezePlugin extends Plugin {
 				client,
 				normalizeNotionId(entry.databaseId),
 				sourceFolder,
-				{
-					...options,
-					strictFrontmatterSchema: entry.strictFrontmatterSchema ?? false,
-					onPushIntentCreating: options.onPushIntentCreating ?? pushIntentLogger?.recordCreating.bind(pushIntentLogger),
+					{
+						...options,
+						strictFrontmatterSchema: entry.strictFrontmatterSchema ?? false,
+						canonicalIdProperty: entry.canonical_id_property ?? null,
+						bidirectional: options.bidirectional ?? {
+							sourceOfTruth: entry.source_of_truth,
+							templaterManaged: entry.templater_managed,
+							lastSyncedAt: entry.lastSyncedAt,
+							onConflict: (conflict) => {
+								this.settings = {
+									...this.settings,
+									pendingConflicts: upsertConflict(this.settings.pendingConflicts, conflict),
+								};
+								void this.writeConflictLog(entry, conflict);
+							},
+						},
+						onPushIntentCreating: options.onPushIntentCreating ?? pushIntentLogger?.recordCreating.bind(pushIntentLogger),
 					onPushIntentCreated: options.onPushIntentCreated ?? pushIntentLogger?.recordCreated.bind(pushIntentLogger),
 					onPushIntentCanonicalized: options.onPushIntentCanonicalized ?? pushIntentLogger?.recordCanonicalized.bind(pushIntentLogger),
 					onPushIntentCommitted: options.onPushIntentCommitted ?? pushIntentLogger?.recordCommitted.bind(pushIntentLogger),

@@ -1,11 +1,19 @@
 import { TFile } from "obsidian";
 import { PluginDataAdapter } from "./plugin-data";
 import { withReservationPathLock } from "./reservations";
+import { isForbiddenLockfileWritePath } from "./vault-canonical";
 
 export class AtomicWriteUnavailableError extends Error {
 	constructor(message: string) {
 		super(message);
 		this.name = "AtomicWriteUnavailableError";
+	}
+}
+
+export class LockfileWriteForbiddenError extends Error {
+	constructor(path: string) {
+		super(`Stonerelay must not write to lockfile path: ${path}`);
+		this.name = "LockfileWriteForbiddenError";
 	}
 }
 
@@ -25,6 +33,9 @@ export async function writeAtomic(
 	content: string,
 	options: AtomicWriteOptions = {}
 ): Promise<void> {
+	if (isForbiddenLockfileWritePath(path)) {
+		throw new LockfileWriteForbiddenError(path);
+	}
 	const adapter = vault.adapter;
 	if (!adapter?.write) {
 		throw new AtomicWriteUnavailableError(`Atomic vault write unavailable for ${path}: adapter.write is not available.`);

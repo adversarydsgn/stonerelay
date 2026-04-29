@@ -13,6 +13,7 @@ import { modifyAtomic } from "./atomic-vault-write";
 import type { ReservationContext } from "./reservations";
 import { validateFrontmatter, ValidationIssue } from "./frontmatter-validator";
 import { extractUniqueId } from "./notion-property-utils";
+import { extractCanonicalMirrorId, vaultCanonicalIdFromProps } from "./vault-canonical";
 
 const CHUNK_LIMIT = 1900;
 const INTERNAL_FRONTMATTER_KEYS = new Set([
@@ -38,6 +39,7 @@ export interface PushContext {
 	titleToNotionId: Map<string, string>;
 	notionIdToPageId: Map<string, string>;
 	warnings: string[];
+	canonicalIdProperty?: string | null;
 }
 
 interface MarkdownDocument {
@@ -51,6 +53,8 @@ interface MarkdownDocument {
 interface ExistingPage {
 	id: string;
 	title: string;
+	last_edited_time?: string;
+	properties?: Record<string, unknown>;
 }
 
 export interface CanonicalFrontmatterDocument {
@@ -152,6 +156,7 @@ export async function pushDatabase(
 		titleToNotionId: new Map(),
 		notionIdToPageId: byId,
 		warnings: [...validationWarnings],
+		canonicalIdProperty: options.canonicalIdProperty ?? null,
 	};
 
 	let created = 0;
@@ -182,10 +187,12 @@ export async function pushDatabase(
 		const existingId = notionId
 			? byId.get(notionId) ?? byId.get(compactNotionId(notionId))
 			: byTitle.get(doc.title);
+		const existingPage = existingId ? existingPages.find((page) => page.id === existingId) : undefined;
 		const properties = buildPageProperties(doc, schema, titlePropName, ctx);
 
 		try {
 			if (existingId) {
+				surfaceCanonicalMirrorDivergence(doc, existingPage, ctx, options);
 				const page = await commitRow(doc.file.path, () =>
 					notionRequest(() => client.pages.update({
 						page_id: existingId,
@@ -284,6 +291,10 @@ export function buildPageProperties(
 		if (payload !== undefined) {
 			properties[name] = payload;
 		}
+	}
+	const canonicalId = vaultCanonicalIdFromProps(doc.props);
+	if (canonicalId && ctx.canonicalIdProperty) {
+		properties[ctx.canonicalIdProperty] = { rich_text: chunkText(canonicalId) };
 	}
 
 	return properties;
@@ -452,11 +463,11 @@ async function queryAllPages(
 		);
 		for (const result of response.results) {
 			if (result.object !== "page" || !("properties" in result)) continue;
-			const page = result as PageObjectResponse;
-			const prop = page.properties[titlePropName];
-			const title = prop?.type === "title" ? convertRichText(prop.title).trim() : "";
-			pages.push({ id: page.id, title });
-		}
+				const page = result as PageObjectResponse;
+				const prop = page.properties[titlePropName];
+				const title = prop?.type === "title" ? convertRichText(prop.title).trim() : "";
+			pages.push({ id: page.id, title, last_edited_time: page.last_edited_time, properties: page.properties });
+			}
 		cursor = response.has_more
 			? (response.next_cursor ?? undefined)
 			: undefined;
@@ -735,5 +746,40 @@ function emptyPushContext(): PushContext {
 		titleToNotionId: new Map(),
 		notionIdToPageId: new Map(),
 		warnings: [],
+		canonicalIdProperty: null,
 	};
+}
+
+function surfaceCanonicalMirrorDivergence(
+	doc: MarkdownDocument,
+	existingPage: ExistingPage | undefined,
+	ctx: PushContext,
+	options: SyncRunOptions
+): void {
+	const canonicalId = vaultCanonicalIdFromProps(doc.props);
+	const property = ctx.canonicalIdProperty;
+	if (!canonicalId || !property || !existingPage) return;
+	const mirrorId = extractCanonicalMirrorId({ properties: existingPage.properties ?? {} }, property);
+	if (!mirrorId || mirrorId === canonicalId) return;
+	const vaultCanonicalLastEdited = typeof doc.props["notion-last-edited"] === "string"
+		? Date.parse(doc.props["notion-last-edited"])
+		: 0;
+	const notionEdited = existingPage.last_edited_time ? Date.parse(existingPage.last_edited_time) : 0;
+	if (!Number.isFinite(notionEdited) || notionEdited <= vaultCanonicalLastEdited) return;
+	options.bidirectional?.onConflict?.({
+		rowId: doc.file.path,
+		notionEditedAt: existingPage.last_edited_time ?? new Date().toISOString(),
+		vaultEditedAt: new Date(doc.file.stat.mtime).toISOString(),
+		notionSnapshot: {
+			canonicalIdProperty: property,
+			canonicalId: mirrorId,
+			pageId: existingPage.id,
+		},
+		vaultSnapshot: {
+			canonicalIdProperty: property,
+			canonicalId,
+			path: doc.file.path,
+		},
+		detectedAt: new Date().toISOString(),
+	});
 }

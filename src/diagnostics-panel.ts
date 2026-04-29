@@ -2,6 +2,7 @@ import { NotionFreezeSettings, SyncError, SyncedDatabase } from "./types";
 import { evaluatePullSafety, evaluatePushSafety } from "./sync-safety";
 import { ActiveReservationSnapshot } from "./reservations";
 import { PushIntentRecovery } from "./push-intents";
+import { VaultCanonicalDiagnosticsRow } from "./vault-canonical";
 
 export type DiagnosticsReadiness = "PASS" | "WARNING" | "BLOCKED";
 
@@ -31,6 +32,7 @@ export interface DiagnosticsOptions {
 	backfilledFileCount?: (entry: SyncedDatabase) => number;
 	activeOperations?: ActiveReservationSnapshot[];
 	pushIntentRecoveries?: PushIntentRecovery[];
+	vaultCanonicalRows?: VaultCanonicalDiagnosticsRow[];
 	onApplyPushIntentRecovery?: (intentId: string) => void;
 	onArchivePushIntentRecovery?: (intentId: string) => void;
 	openFile?: (path: string) => void;
@@ -89,6 +91,7 @@ export function renderDiagnosticsPanel(
 	const rows = buildDiagnosticsRows(settings, options);
 	renderActiveOperations(panel, options.activeOperations ?? []);
 	renderPushIntentRecoveries(panel, options);
+	renderVaultCanonicalRows(panel, options.vaultCanonicalRows ?? []);
 	if (rows.length === 0) {
 		panel.createEl("p", {
 			cls: "setting-item-description",
@@ -111,7 +114,33 @@ export function renderDiagnosticsPanel(
 			item.createEl("p", { text: `Backfilled legacy files: ${row.backfilledFileCount}` });
 			renderValidationIssues(item, row.validationIssues, options.openFile);
 		}
+}
+
+function renderVaultCanonicalRows(panel: HTMLElement, rows: VaultCanonicalDiagnosticsRow[]): void {
+	const section = panel.createDiv({ cls: "stonerelay-vault-canonical-ids" });
+	section.createEl("h4", { text: "Vault Canonical IDs" });
+	if (rows.length === 0) {
+		section.createEl("p", { cls: "setting-item-description", text: "No vault-canonical ID diagnostics." });
+		return;
 	}
+	for (const row of rows) {
+		const item = section.createDiv({ cls: "stonerelay-vault-canonical-row" });
+		item.createEl("p", { text: `${row.name}: mirror ${row.mirrorProperty ?? "not configured"}` });
+		item.createEl("p", { text: `.next-id: ${row.nextIdPresent ? row.nextIdValue ?? "invalid" : "absent"}` });
+		item.createEl("p", { text: `.next-id.lock: ${row.lockPresent ? "present (informational)" : "absent"}` });
+		item.createEl("p", { text: `Notion unique_id max observed: ${row.lastObservedUniqueIdMax ?? "unknown"}` });
+		item.createEl("p", { text: `Awaiting ID stamp: ${row.awaitingStampCount}` });
+		if (row.midBootstrap) {
+			item.createEl("p", { cls: "setting-item-description", text: "Mid-bootstrap detected: .next-id exists but mirror property is not configured." });
+		}
+		if (row.sequenceLag) {
+			item.createEl("p", { cls: "setting-item-description", text: "Sequence lag: vault .next-id may be behind Notion unique_id." });
+		}
+		if (row.nextIdParseError) {
+			item.createEl("p", { cls: "setting-item-description", text: row.nextIdParseError });
+		}
+	}
+}
 
 function renderValidationIssues(
 	container: HTMLElement,
