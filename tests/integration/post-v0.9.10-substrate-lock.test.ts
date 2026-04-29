@@ -497,6 +497,18 @@ async function initClient(): Promise<Client> {
 }
 
 async function queryVerifyPages(entity: EntityConfig, contains?: string): Promise<PageObjectResponse[]> {
+	for (let attempt = 0; attempt < 5; attempt++) {
+		try {
+			return await queryVerifyPagesOnce(entity, contains);
+		} catch (err) {
+			if (!isTransientDataSourceLookupMiss(err) || attempt === 4) throw err;
+			await sleep(750 * (attempt + 1));
+		}
+	}
+	return [];
+}
+
+async function queryVerifyPagesOnce(entity: EntityConfig, contains?: string): Promise<PageObjectResponse[]> {
 	const client = await initClient();
 	const filters: unknown[] = [
 		{ property: entity.titleProperty, title: { starts_with: VERIFY_TITLE_ROOT } },
@@ -529,6 +541,16 @@ async function waitForVerifyPages(entity: EntityConfig, contains: string, count:
 		await new Promise((resolve) => setTimeout(resolve, 750));
 	}
 	return latest;
+}
+
+function isTransientDataSourceLookupMiss(err: unknown): boolean {
+	const candidate = err as { status?: number; code?: string; message?: string };
+	return candidate.status === 404 &&
+		(candidate.code === "object_not_found" || candidate.message?.includes("Could not find database"));
+}
+
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function createPage(entity: EntityConfig, title: string): Promise<PageObjectResponse> {
