@@ -85,8 +85,24 @@ function pushHarness(
 	}
 ) {
 	const folder = Object.assign(Object.create(TFolder.prototype), { path: "_relay/timestamp-test" });
+	const written = new Map<string, string>();
 	const app = {
 		vault: {
+			adapter: {
+				write: vi.fn(async (path: string, content: string) => {
+					written.set(path, content);
+				}),
+				rename: vi.fn(async (from: string, to: string) => {
+					const content = written.get(from);
+					if (content === undefined) throw new Error(`missing temp ${from}`);
+					written.delete(from);
+					const entry = files.find((item) => item.file.path === to);
+					if (entry) entry.content = content;
+				}),
+				remove: vi.fn(async (path: string) => {
+					written.delete(path);
+				}),
+			},
 			getAbstractFileByPath: vi.fn().mockReturnValue(folder),
 			getMarkdownFiles: vi.fn().mockReturnValue(files.map((entry) => entry.file)),
 			cachedRead: vi.fn(async (tfile: TFile) => files.find((entry) => entry.file === tfile)?.content ?? ""),
@@ -140,6 +156,7 @@ function page(id: string, title: string, createdTime: string, lastEditedTime: st
 	return {
 		object: "page",
 		id,
+		url: `https://www.notion.so/${id}`,
 		created_time: createdTime,
 		last_edited_time: lastEditedTime,
 		properties: {

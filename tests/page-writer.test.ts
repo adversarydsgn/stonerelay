@@ -34,4 +34,32 @@ describe("standalone page content", () => {
 		expect(content).toContain("notion-parent-type: workspace");
 		expect(content).toContain("# Body");
 	});
+
+	test("omits empty frontmatter values while preserving non-empty values", () => {
+		const content = buildFileContent({
+			"notion-id": "page-1",
+			EmptyArray: [],
+			EmptyObject: {},
+			Nil: null,
+			Missing: undefined,
+			EmptyString: "",
+			FalseValue: false,
+			ZeroValue: 0,
+			Tags: ["one", "two"],
+			ObjectValue: { start: "2026-04-29" },
+			Text: "hello",
+		}, "# Body\n");
+
+		const frontmatter = content.slice(0, content.indexOf("---", 4));
+		expect(frontmatter).not.toMatch(/:\s*\[\]\s*$/m);
+		expect(frontmatter).not.toMatch(/:\s*\{\}\s*$/m);
+		expect(frontmatter).not.toMatch(/:\s*null\s*$/m);
+		expect(frontmatter).not.toMatch(/:\s*""\s*$/m);
+		expect(frontmatter).not.toMatch(/:\s*''\s*$/m);
+		expect(content).toContain("FalseValue: false");
+		expect(content).toContain("ZeroValue: 0");
+		expect(content).toContain("Tags:\n  - one\n  - two");
+		expect(content).toContain('ObjectValue: "{\\"start\\":\\"2026-04-29\\"}"');
+		expect(content).toContain("Text: hello");
+	});
 });

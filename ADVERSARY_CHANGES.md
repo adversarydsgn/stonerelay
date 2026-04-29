@@ -2,6 +2,15 @@
 
 Fork-side changes to `stonerelay` (vs. upstream `ran-codes/obsidian-notion-database-sync`).
 
+## v0.9.11 — 2026-04-29
+
+Restores plugin-UI Notion calls, completes push-create canonical backfill, and gates live substrate verification.
+
+**Behavior notes:**
+- Restores plugin UI Notion requests by moving the Obsidian `requestUrl` binding into a static host wrapper while keeping the canonical Notion client host-agnostic.
+- Push-created and push-updated vault files now backfill `notion-id`, `notion-url`, and `notion-last-edited` together from the returned Notion page response.
+- Pull serialization now omits empty frontmatter values, and the live Notion/vault substrate suite runs only through `npm run test:integration`.
+
 ## v0.9.10 — 2026-04-28
 
 Branded reservation context and vault-canonical ID bootstrap release.

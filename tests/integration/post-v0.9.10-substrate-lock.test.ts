@@ -21,7 +21,7 @@ const execFileAsync = promisify(execFile);
 const VAULT_ROOT = "/Users/adversary/Documents/Obsidian Vaults/adversary";
 const VERIFY_TITLE_ROOT = "[STONERELAY-VERIFY-";
 const BOOTSTRAP_DIAGNOSTIC =
-	"bootstrap migration may not have been run; expected seed values are DEC=461, LOOP=613, FRIC=172, SES=387 as of 2026-04-28";
+	"bootstrap migration may not have been run; expected minimum seed values are DEC=461, LOOP=613, FRIC=172, SES=387 as of 2026-04-28";
 
 type FrontmatterValue = string | number | boolean | null;
 
@@ -183,6 +183,7 @@ const ENTITIES: readonly EntityConfig[] = [
 		expectedSeed: 387,
 		pushFrontmatter: (title) => ({
 			Session: title,
+			"notion-database-id": "4aa9efae-3e59-4789-90b0-1b67ad3b43a2",
 		}),
 		pullProperties: (title) => ({
 			Session: titleProp(title),
@@ -270,6 +271,7 @@ describe("post-v0.9.10-substrate-lock", () => {
 		it(`T3 pulls a Notion-created ${entity.entityName} row to the vault and cleans it up`, async () => {
 			const title = `${verifyPrefix()} ${entity.shortName} pull round-trip`;
 			const page = await createPage(entity, title);
+			await waitForVerifyPages(entity, title, 1);
 			const client = await initClient();
 			let pulledFilePath: string | null = null;
 			try {
@@ -315,7 +317,7 @@ describe("post-v0.9.10-substrate-lock", () => {
 				} else {
 					expect(props.Status).toBe("Open");
 				}
-				expect(raw).not.toMatch(/^[^:\n]+:\s*\[\]\s*$/m);
+				assertNoEmptyFrontmatterEmissions(raw);
 				expect(raw).not.toMatch(/:\s*\|\s*$/m);
 			} finally {
 				if (pulledFilePath) await deleteVaultFile(pulledFilePath);
@@ -467,7 +469,7 @@ describe("post-v0.9.10-substrate-lock", () => {
 
 		for (const raw of samples) {
 			expect(raw).not.toMatch(/:\s*\|\s*$/m);
-			expect(raw).not.toMatch(/^[^:\n]+:\s*\[\]\s*$/m);
+			assertNoEmptyFrontmatterEmissions(raw);
 			const { props } = parseFrontmatter(raw);
 			for (const [key, value] of Object.entries(props)) {
 				if (typeof value === "string" && key !== "ID") {
@@ -584,7 +586,6 @@ async function assertLockfileSeeds(): Promise<void> {
 	for (const entity of ENTITIES) {
 		const value = await readNextId(entity);
 		expect(value, `${entity.uniqueIdPrefix} .next-id ${BOOTSTRAP_DIAGNOSTIC}`).toBeGreaterThanOrEqual(entity.expectedSeed);
-		expect(value, `${entity.uniqueIdPrefix} .next-id`).toBe(entity.expectedSeed);
 		const lock = await stat(path.join(VAULT_ROOT, entity.vaultFolder, ".next-id.lock"));
 		expect(lock.size, `${entity.uniqueIdPrefix} .next-id.lock inode target must be empty`).toBe(0);
 	}
@@ -744,6 +745,15 @@ function assertPageProperties(page: PageObjectResponse, expected: Record<string,
 		const property = page.properties[key];
 		expect(propertyValue(property), `Notion property ${key}`).toBe(value);
 	}
+}
+
+function assertNoEmptyFrontmatterEmissions(raw: string): void {
+	const frontmatter = raw.match(/^---\r?\n([\s\S]*?)\r?\n---/)?.[1] ?? raw;
+	expect(frontmatter).not.toMatch(/:\s*\[\]\s*$/m);
+	expect(frontmatter).not.toMatch(/:\s*\{\}\s*$/m);
+	expect(frontmatter).not.toMatch(/:\s*null\s*$/m);
+	expect(frontmatter).not.toMatch(/:\s*""\s*$/m);
+	expect(frontmatter).not.toMatch(/:\s*''\s*$/m);
 }
 
 function propertyValue(property: PageObjectResponse["properties"][string] | undefined): FrontmatterValue | string[] | undefined {

@@ -338,17 +338,18 @@ export function buildFileContent(
 ): string {
 	const yamlLines: string[] = ["---"];
 	for (const [key, value] of Object.entries(frontmatter)) {
-		yamlLines.push(formatYamlEntry(key, value));
+		const line = formatYamlEntry(key, value);
+		if (line !== null) yamlLines.push(line);
 	}
 	yamlLines.push("---");
 	return yamlLines.join("\n") + "\n" + body;
 }
 
-function formatYamlEntry(key: string, value: unknown): string {
+function formatYamlEntry(key: string, value: unknown): string | null {
 	const safeKey = key.includes(":") || key.includes(" ") ? `"${key}"` : key;
 
 	if (value === null || value === undefined) {
-		return `${safeKey}: null`;
+		return null;
 	}
 	if (typeof value === "boolean") {
 		return `${safeKey}: ${value}`;
@@ -357,14 +358,16 @@ function formatYamlEntry(key: string, value: unknown): string {
 		return `${safeKey}: ${value}`;
 	}
 	if (Array.isArray(value)) {
-		if (value.length === 0) return `${safeKey}: []`;
+		if (value.length === 0) return null;
 		const items = value.map((v) => `  - ${yamlEscapeString(String(v))}`);
 		return `${safeKey}:\n${items.join("\n")}`;
 	}
 	if (typeof value === "object") {
+		if (Object.keys(value as Record<string, unknown>).length === 0) return null;
 		return `${safeKey}: ${yamlEscapeString(JSON.stringify(value))}`;
 	}
-	return `${safeKey}: ${yamlEscapeString(String(value))}`;
+	const text = String(value);
+	return text === "" ? null : `${safeKey}: ${yamlEscapeString(text)}`;
 }
 
 function yamlEscapeString(str: string): string {

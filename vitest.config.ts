@@ -1,6 +1,8 @@
 import { defineConfig } from "vitest/config";
 import { resolve } from "path";
 
+const integration = process.env.VITEST_INTEGRATION === "1";
+
 export default defineConfig({
 	resolve: {
 		alias: {
@@ -9,6 +11,7 @@ export default defineConfig({
 	},
 	test: {
 		environment: "node",
-		include: ["tests/**/*.test.ts"],
+		include: integration ? ["tests/integration/**/*.test.ts"] : ["tests/*.test.ts"],
+		exclude: integration ? [] : ["tests/integration/**"],
 	},
 });

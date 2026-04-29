@@ -1,12 +1,14 @@
 {
 	"name": "obsidian-notion-database-sync",
-	"version": "0.9.10",
+	"version": "0.9.11",
 	"description": "Sync Notion databases and pages into your vault as Markdown.",
 	"main": "main.js",
 	"scripts": {
 		"dev": "node esbuild.config.mjs",
 		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
-		"test": "vitest run"
+		"test": "vitest run",
+		"test:integration": "VITEST_INTEGRATION=1 vitest run",
+		"test:all": "npm test && npm run test:integration"
 	},
 	"keywords": [],
 	"author": "ranli",

@@ -438,6 +438,64 @@ describe("pushDatabase integration", () => {
 		expect(result.created).toBe(1);
 		expect(phases).toEqual(["creating", "created:created-page", "committed"]);
 	});
+
+	it("backfills canonical Notion fields from the create response in one vault write", async () => {
+		const folder = Object.assign(Object.create(TFolder.prototype), { path: "_relay/bugs" });
+		const files = [
+			file("_relay/bugs/new.md", "---\nStatus: Doing\n---\n# New"),
+		];
+		const writes: string[] = [];
+		const app = {
+			vault: {
+				adapter: {
+					write: vi.fn(async (_path: string, content: string) => {
+						writes.push(content);
+					}),
+					rename: vi.fn(async () => undefined),
+					remove: vi.fn(async () => undefined),
+				},
+				getAbstractFileByPath: vi.fn().mockReturnValue(folder),
+				getMarkdownFiles: vi.fn().mockReturnValue(files.map((entry) => entry.file)),
+				cachedRead: vi.fn(async (tfile: TFile) => files.find((entry) => entry.file === tfile)?.content ?? ""),
+			},
+		};
+		const client = {
+			databases: {
+				retrieve: vi.fn().mockResolvedValue({
+					title: [richText("Bugs")],
+					data_sources: [{ id: "source-1" }],
+				}),
+			},
+			dataSources: {
+				retrieve: vi.fn().mockResolvedValue({
+					properties: {
+						Name: { type: "title" },
+						Status: { type: "status" },
+					},
+				}),
+				query: vi.fn().mockResolvedValue({ has_more: false, results: [] }),
+			},
+			pages: {
+				update: vi.fn(),
+				create: vi.fn().mockResolvedValue({
+					id: "created-page",
+					url: "https://www.notion.so/created-page",
+					last_edited_time: "2026-04-29T01:23:45.678Z",
+				}),
+			},
+		};
+
+		const result = await withPushReservation((context) =>
+			pushDatabase(app as never, client as never, "db-1", "_relay/bugs", { context })
+		);
+
+		expect(result.created).toBe(1);
+		expect(app.vault.adapter.write).toHaveBeenCalledTimes(1);
+		const committed = writes[0];
+		expect(committed).toContain("notion-id: created-page");
+		expect(committed).toContain('notion-url: "https://www.notion.so/created-page"');
+		expect(committed).toContain('notion-last-edited: "2026-04-29T01:23:45.678Z"');
+	});
 });
 
 function file(path: string, content: string): { file: TFile; content: string } {

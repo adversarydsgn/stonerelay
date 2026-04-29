@@ -44,6 +44,12 @@ interface ExistingPage {
 	title: string;
 }
 
+interface NotionPageCanonicalFields {
+	id?: unknown;
+	url?: unknown;
+	last_edited_time?: unknown;
+}
+
 export class StaleNotionIdConfirmationRequired extends Error {
 	readonly state: Extract<StaleNotionIdSafetyState, { kind: "requires-stale-id-confirmation" }>;
 
@@ -142,7 +148,7 @@ export async function pushDatabase(
 					} as never)),
 					options.onRowCommitted
 				);
-				await refreshFrontmatterNotionId(app, doc, getReturnedPageId(page) ?? existingId, options);
+				await refreshFrontmatterCanonicalFields(app, doc, canonicalFields(page, existingId), options);
 				updated++;
 			} else {
 				const intentId = await options.onPushIntentCreating?.(doc.file.path, doc.title);
@@ -156,7 +162,7 @@ export async function pushDatabase(
 				const returnedId = getReturnedPageId(page);
 				if (returnedId) {
 					if (intentId) await options.onPushIntentCreated?.(intentId, returnedId);
-					await refreshFrontmatterNotionId(app, doc, returnedId, options);
+					await refreshFrontmatterCanonicalFields(app, doc, canonicalFields(page, returnedId), options);
 					if (intentId) await options.onPushIntentCommitted?.(intentId);
 				}
 				created++;
@@ -535,11 +541,56 @@ async function refreshFrontmatterNotionId(
 	notionId: string,
 	options: SyncRunOptions = {}
 ): Promise<void> {
-	if (!notionId || doc.props["notion-id"] === notionId) return;
+	await refreshFrontmatterCanonicalFields(app, doc, { id: notionId }, options);
+}
+
+async function refreshFrontmatterCanonicalFields(
+	app: App,
+	doc: MarkdownDocument,
+	page: NotionPageCanonicalFields,
+	options: SyncRunOptions = {}
+): Promise<void> {
+	const updates: Array<[string, string]> = [];
+	const notionId = stringField(page.id);
+	if (notionId) {
+		if (doc.props["notion-id"] !== notionId) updates.push(["notion-id", notionId]);
+	} else {
+		console.warn("Stonerelay push warning: Notion page response missing id; skipped notion-id frontmatter backfill.");
+	}
+	const notionUrl = stringField(page.url);
+	if (notionUrl) {
+		if (doc.props["notion-url"] !== notionUrl) updates.push(["notion-url", notionUrl]);
+	} else {
+		console.warn("Stonerelay push warning: Notion page response missing url; skipped notion-url frontmatter backfill.");
+	}
+	const notionLastEdited = stringField(page.last_edited_time);
+	if (notionLastEdited) {
+		if (doc.props["notion-last-edited"] !== notionLastEdited) updates.push(["notion-last-edited", notionLastEdited]);
+	} else {
+		console.warn("Stonerelay push warning: Notion page response missing last_edited_time; skipped notion-last-edited frontmatter backfill.");
+	}
+	if (updates.length === 0) return;
+
 	const raw = await app.vault.cachedRead(doc.file);
-	const next = upsertFrontmatterValue(raw, "notion-id", notionId);
+	const next = updates.reduce((content, [key, value]) => upsertFrontmatterValue(content, key, value), raw);
 	if (next !== raw) await modifyAtomic(app.vault, doc.file, next, { onCommitted: options.onAtomicWriteCommitted });
-	doc.props["notion-id"] = notionId;
+	for (const [key, value] of updates) {
+		doc.props[key] = value;
+	}
+}
+
+function canonicalFields(page: unknown, fallbackId?: string): NotionPageCanonicalFields {
+	if (!page || typeof page !== "object") return { id: fallbackId };
+	const source = page as NotionPageCanonicalFields;
+	return {
+		id: stringField(source.id) ?? fallbackId,
+		url: source.url,
+		last_edited_time: source.last_edited_time,
+	};
+}
+
+function stringField(value: unknown): string | null {
+	return typeof value === "string" && value ? value : null;
 }
 
 function requireReservation(context: ReservationContext | undefined, writer: string): void {
