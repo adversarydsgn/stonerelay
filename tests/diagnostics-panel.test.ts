@@ -128,11 +128,12 @@ describe("diagnostics panel rows", () => {
 				startedAt: "2026-04-28T10:00:00.000Z",
 			}]),
 			getPushIntentRecoveries: vi.fn(() => [{
-				intentId: "intent-1",
-				vaultPath: "3. System/Bugs DB/new.md",
-				notionId: "page-new",
-				message: "Push recovery needs action",
-			}]),
+					intentId: "intent-1",
+					vaultPath: "3. System/Bugs DB/new.md",
+					notionId: "page-new",
+					phase: "created",
+					message: "Push recovery needs action",
+				}]),
 			applyPushIntentRecovery: vi.fn(),
 			archivePushIntentRecovery: vi.fn(),
 		};
@@ -156,16 +157,17 @@ describe("diagnostics panel rows", () => {
 
 		renderDiagnosticsPanel(root as never, settings([database()]), {
 			pushIntentRecoveries: [{
-				intentId: "intent-1",
-				vaultPath: "3. System/Bugs DB/new.md",
-				notionId: "page-new",
-				message: "Push recovery needs action",
-			}],
+					intentId: "intent-1",
+					vaultPath: "3. System/Bugs DB/new.md",
+					notionId: "page-new",
+					phase: "created",
+					message: "Push recovery needs action",
+				}],
 			onApplyPushIntentRecovery: apply,
 			onArchivePushIntentRecovery: archive,
 		});
 
-		clickButton(root, "Apply id locally");
+			clickButton(root, "Apply canonical fields");
 		clickButton(root, "Archive orphan in Notion");
 
 		expect(apply).toHaveBeenCalledWith("intent-1");

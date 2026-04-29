@@ -1,7 +1,8 @@
 import { createHash } from "crypto";
 import { PluginDataAdapter } from "./plugin-data";
+import { withReservationPathLock } from "./reservations";
 
-export type PushIntentPhase = "creating" | "created" | "committed" | "archived";
+export type PushIntentPhase = "creating" | "created" | "canonicalized" | "committed" | "archived";
 
 export interface PushIntentRecord {
 	intent_id: string;
@@ -10,6 +11,7 @@ export interface PushIntentRecord {
 	title_hash: string;
 	phase: PushIntentPhase;
 	notion_id?: string;
+	fields_written?: string[];
 	started_at?: string;
 	completed_at?: string;
 }
@@ -18,12 +20,14 @@ export interface PushIntentRecovery {
 	intentId: string;
 	vaultPath: string;
 	notionId: string;
+	phase: "created" | "canonicalized";
 	message: string;
 }
 
 export interface PushIntentLogger {
 	recordCreating(vaultPath: string, title: string): Promise<string>;
 	recordCreated(intentId: string, notionId: string): Promise<void>;
+	recordCanonicalized(intentId: string, fieldsWritten: string[]): Promise<void>;
 	recordCommitted(intentId: string): Promise<void>;
 }
 
@@ -59,6 +63,18 @@ export class PushIntentLog implements PushIntentLogger {
 		});
 	}
 
+	async recordCanonicalized(intentId: string, fieldsWritten: string[]): Promise<void> {
+		await appendIntentRecord(this.adapter, this.logPath, {
+			intent_id: intentId,
+			reservation_id: this.reservationId,
+			vault_path: "",
+			title_hash: "",
+			phase: "canonicalized",
+			fields_written: fieldsWritten,
+			completed_at: new Date().toISOString(),
+		});
+	}
+
 	async recordCommitted(intentId: string): Promise<void> {
 		await appendIntentRecord(this.adapter, this.logPath, {
 			intent_id: intentId,
@@ -77,19 +93,26 @@ export async function appendIntentRecord(
 	record: PushIntentRecord
 ): Promise<void> {
 	if (!adapter.write) throw new Error("Push intent log unavailable: adapter.write is not available.");
-	if (!adapter.rename) {
-		throw new Error("Push intent log degraded: adapter.rename is required for atomic intent commits.");
-	}
 	const existing = adapter.read ? await adapter.read(logPath).catch(() => "") : "";
 	const payload = `${existing}${JSON.stringify(record)}\n`;
 	const tempPath = `${logPath}.tmp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 	await adapter.write(tempPath, payload);
 	try {
-		try {
-			await adapter.rename(tempPath, logPath);
-		} catch (err) {
-			throw new Error(`Atomic push intent log commit failed for ${logPath}: ${err instanceof Error ? err.message : String(err)}`);
+		if (adapter.rename) {
+			try {
+				await adapter.rename(tempPath, logPath);
+				return;
+			} catch (err) {
+				throw new Error(`Atomic push intent log commit failed for ${logPath}: ${err instanceof Error ? err.message : String(err)}`);
+			}
 		}
+		await withReservationPathLock(logPath, async () => {
+			if (adapter.read) {
+				const tempPayload = await adapter.read(tempPath);
+				if (tempPayload !== payload) throw new Error(`Atomic push intent log verification failed for ${logPath}.`);
+			}
+			await adapter.write?.(logPath, payload);
+		});
 	} finally {
 		await adapter.remove?.(tempPath).catch(() => undefined);
 	}
@@ -103,7 +126,6 @@ export async function recoverPushIntents(
 	if (!adapter.read) return [];
 	const raw = await adapter.read(logPath).catch(() => "");
 	const latest = new Map<string, PushIntentRecord>();
-	const created = new Map<string, PushIntentRecord>();
 	for (const line of raw.split(/\r?\n/)) {
 		if (!line.trim()) continue;
 		try {
@@ -115,8 +137,8 @@ export async function recoverPushIntents(
 				vault_path: record.vault_path || previous?.vault_path || "",
 				title_hash: record.title_hash || previous?.title_hash || "",
 				notion_id: record.notion_id || previous?.notion_id,
+				fields_written: record.fields_written ?? previous?.fields_written,
 			});
-			if (record.phase === "created") created.set(record.intent_id, record);
 		} catch {
 			continue;
 		}
@@ -124,7 +146,7 @@ export async function recoverPushIntents(
 
 	const recoveries: PushIntentRecovery[] = [];
 	for (const [intentId, record] of latest) {
-		if (record.phase !== "created" || !record.notion_id) continue;
+		if ((record.phase !== "created" && record.phase !== "canonicalized") || !record.notion_id) continue;
 		if (isOlderThanThirtyDays(record.completed_at ?? record.started_at, now)) {
 			try {
 				await appendIntentRecord(adapter, logPath, {
@@ -141,7 +163,10 @@ export async function recoverPushIntents(
 			intentId,
 			vaultPath: record.vault_path,
 			notionId: record.notion_id,
-			message: `Push for ${record.vault_path} created Notion page ${record.notion_id} but did not write the id locally. Apply id now? Or delete the orphan Notion page?`,
+			phase: record.phase,
+			message: record.phase === "canonicalized"
+				? `Push for ${record.vault_path} canonicalized Notion page ${record.notion_id} but did not finish the commit. Re-check canonical fields now?`
+				: `Push for ${record.vault_path} created Notion page ${record.notion_id} but did not write canonical fields locally. Apply them now? Or delete the orphan Notion page?`,
 		});
 	}
 	return recoveries;

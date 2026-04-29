@@ -427,17 +427,20 @@ describe("pushDatabase integration", () => {
 				phases.push("creating");
 				return "intent-1";
 			},
-			onPushIntentCreated: async (_intentId, notionId) => {
-				phases.push(`created:${notionId}`);
-			},
-			onPushIntentCommitted: async () => {
-				phases.push("committed");
-			},
-		}));
+				onPushIntentCreated: async (_intentId, notionId) => {
+					phases.push(`created:${notionId}`);
+				},
+				onPushIntentCanonicalized: async (_intentId, fieldsWritten) => {
+					phases.push(`canonicalized:${fieldsWritten.join(",")}`);
+				},
+				onPushIntentCommitted: async () => {
+					phases.push("committed");
+				},
+			}));
 
-		expect(result.created).toBe(1);
-		expect(phases).toEqual(["creating", "created:created-page", "committed"]);
-	});
+			expect(result.created).toBe(1);
+			expect(phases).toEqual(["creating", "created:created-page", "canonicalized:notion-id,notion-database-id", "committed"]);
+		});
 
 	it("backfills canonical Notion fields from the create response in one vault write", async () => {
 		const folder = Object.assign(Object.create(TFolder.prototype), { path: "_relay/bugs" });
@@ -477,13 +480,16 @@ describe("pushDatabase integration", () => {
 			},
 			pages: {
 				update: vi.fn(),
-				create: vi.fn().mockResolvedValue({
-					id: "created-page",
-					url: "https://www.notion.so/created-page",
-					last_edited_time: "2026-04-29T01:23:45.678Z",
-				}),
-			},
-		};
+					create: vi.fn().mockResolvedValue({
+						id: "created-page",
+						url: "https://www.notion.so/created-page",
+						last_edited_time: "2026-04-29T01:23:45.678Z",
+						properties: {
+							ID: { type: "unique_id", unique_id: { prefix: "ADV", number: 462 } },
+						},
+					}),
+				},
+			};
 
 		const result = await withPushReservation((context) =>
 			pushDatabase(app as never, client as never, "db-1", "_relay/bugs", { context })
@@ -492,11 +498,13 @@ describe("pushDatabase integration", () => {
 		expect(result.created).toBe(1);
 		expect(app.vault.adapter.write).toHaveBeenCalledTimes(1);
 		const committed = writes[0];
-		expect(committed).toContain("notion-id: created-page");
-		expect(committed).toContain('notion-url: "https://www.notion.so/created-page"');
-		expect(committed).toContain('notion-last-edited: "2026-04-29T01:23:45.678Z"');
+			expect(committed).toContain("notion-id: created-page");
+			expect(committed).toContain('notion-url: "https://www.notion.so/created-page"');
+			expect(committed).toContain('notion-last-edited: "2026-04-29T01:23:45.678Z"');
+			expect(committed).toContain("notion-database-id: db-1");
+			expect(committed).toContain("notion-unique-id: ADV-462");
+		});
 	});
-});
 
 function file(path: string, content: string): { file: TFile; content: string } {
 	const name = path.slice(path.lastIndexOf("/") + 1);

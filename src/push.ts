@@ -12,6 +12,7 @@ import { evaluateStaleNotionIdSafety, StaleNotionIdSafetyState, validatePushCand
 import { modifyAtomic } from "./atomic-vault-write";
 import type { ReservationContext } from "./reservations";
 import { validateFrontmatter, ValidationIssue } from "./frontmatter-validator";
+import { extractUniqueId } from "./notion-property-utils";
 
 const CHUNK_LIMIT = 1900;
 const INTERNAL_FRONTMATTER_KEYS = new Set([
@@ -21,6 +22,7 @@ const INTERNAL_FRONTMATTER_KEYS = new Set([
 	"notion-last-edited",
 	"notion-last-edited-time",
 	"notion-database-id",
+	"notion-unique-id",
 	"notion-deleted",
 ]);
 
@@ -51,10 +53,17 @@ interface ExistingPage {
 	title: string;
 }
 
-interface NotionPageCanonicalFields {
+export interface CanonicalFrontmatterDocument {
+	file: TFile;
+	props: Record<string, unknown>;
+}
+
+export interface NotionPageCanonicalFields {
 	id?: unknown;
 	url?: unknown;
 	last_edited_time?: unknown;
+	database_id?: string;
+	notion_unique_id?: string | null;
 }
 
 export class StaleNotionIdConfirmationRequired extends Error {
@@ -184,7 +193,7 @@ export async function pushDatabase(
 					} as never)),
 					options.onRowCommitted
 				);
-				await refreshFrontmatterCanonicalFields(app, doc, canonicalFields(page, existingId), options);
+				await commitCanonicalFrontmatter(app, doc, canonicalFields(page, existingId, databaseId), options);
 				updated++;
 			} else {
 				const intentId = await options.onPushIntentCreating?.(doc.file.path, doc.title);
@@ -198,7 +207,8 @@ export async function pushDatabase(
 				const returnedId = getReturnedPageId(page);
 				if (returnedId) {
 					if (intentId) await options.onPushIntentCreated?.(intentId, returnedId);
-					await refreshFrontmatterCanonicalFields(app, doc, canonicalFields(page, returnedId), options);
+					const fieldsWritten = await commitCanonicalFrontmatter(app, doc, canonicalFields(page, returnedId, databaseId), options);
+					if (intentId) await options.onPushIntentCanonicalized?.(intentId, fieldsWritten);
 					if (intentId) await options.onPushIntentCommitted?.(intentId);
 				}
 				created++;
@@ -569,21 +579,12 @@ function getReturnedPageId(value: unknown): string | null {
 	return null;
 }
 
-async function refreshFrontmatterNotionId(
+export async function commitCanonicalFrontmatter(
 	app: App,
-	doc: MarkdownDocument,
-	notionId: string,
-	options: SyncRunOptions = {}
-): Promise<void> {
-	await refreshFrontmatterCanonicalFields(app, doc, { id: notionId }, options);
-}
-
-async function refreshFrontmatterCanonicalFields(
-	app: App,
-	doc: MarkdownDocument,
+	doc: CanonicalFrontmatterDocument,
 	page: NotionPageCanonicalFields,
 	options: SyncRunOptions = {}
-): Promise<void> {
+): Promise<string[]> {
 	const updates: Array<[string, string]> = [];
 	const notionId = stringField(page.id);
 	if (notionId) {
@@ -603,7 +604,15 @@ async function refreshFrontmatterCanonicalFields(
 	} else {
 		console.warn("Stonerelay push warning: Notion page response missing last_edited_time; skipped notion-last-edited frontmatter backfill.");
 	}
-	if (updates.length === 0) return;
+	const notionDatabaseId = stringField(page.database_id);
+	if (notionDatabaseId && doc.props["notion-database-id"] !== notionDatabaseId) {
+		updates.push(["notion-database-id", notionDatabaseId]);
+	}
+	const notionUniqueId = stringField(page.notion_unique_id);
+	if (notionUniqueId && doc.props["notion-unique-id"] !== notionUniqueId) {
+		updates.push(["notion-unique-id", notionUniqueId]);
+	}
+	if (updates.length === 0) return [];
 
 	const raw = await app.vault.cachedRead(doc.file);
 	const next = updates.reduce((content, [key, value]) => upsertFrontmatterValue(content, key, value), raw);
@@ -611,15 +620,18 @@ async function refreshFrontmatterCanonicalFields(
 	for (const [key, value] of updates) {
 		doc.props[key] = value;
 	}
+	return updates.map(([key]) => key);
 }
 
-function canonicalFields(page: unknown, fallbackId?: string): NotionPageCanonicalFields {
-	if (!page || typeof page !== "object") return { id: fallbackId };
-	const source = page as NotionPageCanonicalFields;
+export function canonicalFields(page: unknown, fallbackId?: string, databaseId?: string): NotionPageCanonicalFields {
+	if (!page || typeof page !== "object") return { id: fallbackId, database_id: databaseId };
+	const source = page as Record<string, unknown>;
 	return {
-		id: stringField(source.id) ?? fallbackId,
-		url: source.url,
-		last_edited_time: source.last_edited_time,
+		id: stringField(source["id"]) ?? fallbackId,
+		url: source["url"],
+		last_edited_time: source["last_edited_time"],
+		database_id: databaseId,
+		notion_unique_id: extractUniqueId(source["properties"]),
 	};
 }
 

@@ -158,7 +158,7 @@ function renderPushIntentRecoveries(panel: HTMLElement, options: DiagnosticsOpti
 	for (const recovery of recoveries) {
 		const item = section.createDiv({ cls: "stonerelay-push-intent-recovery" });
 		item.createEl("p", { text: recovery.message });
-		const apply = item.createEl("button", { text: "Apply id locally" });
+			const apply = item.createEl("button", { text: "Apply canonical fields" });
 		apply.type = "button";
 		apply.addEventListener("click", () => options.onApplyPushIntentRecovery?.(recovery.intentId));
 		const archive = item.createEl("button", { text: "Archive orphan in Notion" });

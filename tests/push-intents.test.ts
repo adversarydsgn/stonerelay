@@ -23,12 +23,13 @@ describe("push intent log", () => {
 		});
 
 		expect(await recoverPushIntents(adapter, "push-intents.jsonl", new Date("2026-04-28T00:00:00.000Z"))).toEqual([{
-			intentId: "intent-1",
-			vaultPath: "_relay/Bugs DB/New.md",
-			notionId: "page-1",
-			message: "Push for _relay/Bugs DB/New.md created Notion page page-1 but did not write the id locally. Apply id now? Or delete the orphan Notion page?",
-		}]);
-	});
+				intentId: "intent-1",
+				vaultPath: "_relay/Bugs DB/New.md",
+				notionId: "page-1",
+				phase: "created",
+				message: "Push for _relay/Bugs DB/New.md created Notion page page-1 but did not write canonical fields locally. Apply them now? Or delete the orphan Notion page?",
+			}]);
+		});
 
 	it("persists records atomically without torn lines when temp write fails", async () => {
 		const adapter = memoryAdapter();

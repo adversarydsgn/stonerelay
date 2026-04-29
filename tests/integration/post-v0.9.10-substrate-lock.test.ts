@@ -360,6 +360,7 @@ describe("post-v0.9.10-substrate-lock", () => {
 					retryRowIds: [filePath],
 					onPushIntentCreating: async () => "manual-merge-test-intent",
 					onPushIntentCreated: async () => undefined,
+					onPushIntentCanonicalized: async () => undefined,
 					onPushIntentCommitted: async () => undefined,
 				});
 				expect(result.failed).toBe(0);
@@ -375,6 +376,7 @@ describe("post-v0.9.10-substrate-lock", () => {
 			expect(props["notion-id"]).toBe(pushedPageId);
 			expect(props["notion-url"], "manual_merge create backfill should include notion-url").toEqual(expect.any(String));
 			expect(props["notion-last-edited"], "manual_merge create backfill should include notion-last-edited").toEqual(expect.any(String));
+			expect(props["notion-database-id"], "manual_merge create backfill should include notion-database-id").toBe(entity.databaseId);
 		} finally {
 			createClient.mockRestore();
 			const pages = pushedPageId

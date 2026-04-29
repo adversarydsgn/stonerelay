@@ -6,18 +6,17 @@ import { normalizeNotionId, notionRequest } from "./notion-client";
 import { createObsidianNotionClient } from "./notion-client-obsidian";
 import { freshDatabaseImport, refreshDatabase } from "./database-freezer";
 import { migrateData, resolveErrorLogFolder, syncAll, updateDatabase, updatePage } from "./settings-data";
-import { inspectStaleNotionIdSkips, pushDatabase } from "./push";
+import { canonicalFields, commitCanonicalFrontmatter, inspectStaleNotionIdSkips, parseFrontmatter, pushDatabase } from "./push";
 import { applyPhaseTransition, syncErrorsFromMessages, SyncCancelled } from "./sync-state";
 import { PluginDataAdapter, writePluginDataAtomic } from "./plugin-data";
 import { AutoSyncJob, AutoSyncQueue, createBackgroundConflict, findAutoSyncEntryForPath, isAutoSyncEligible } from "./auto-sync";
 import { importStandalonePage, refreshStandalonePage } from "./page-sync";
 import { parseNotionPageId } from "./settings-ux";
-import { isSafeVaultRelativePath, resolveDatabasePathModel } from "./path-model";
+import { isSafeVaultRelativePath, pathStartsWith, resolveDatabasePathModel } from "./path-model";
 import { confirmStaleNotionIdSafety, evaluatePullSafety, evaluatePushSafety, retryDirectionForErrors, StaleNotionIdSafetyState } from "./sync-safety";
 import { ReservationHandle, ReservationManager, ReservationOperationType, ReservationPolicy, ReservationRejectedError } from "./reservations";
 import type { ReservationContext } from "./reservations";
 import { appendIntentRecord, PushIntentLog, PushIntentRecovery, recoverPushIntents } from "./push-intents";
-import { modifyAtomic } from "./atomic-vault-write";
 
 export default class NotionFreezePlugin extends Plugin {
 	settings: NotionFreezeSettings = migrateData(null);
@@ -646,11 +645,12 @@ export default class NotionFreezePlugin extends Plugin {
 				client,
 				normalizeNotionId(entry.databaseId),
 				sourceFolder,
-					{
-						...options,
-						strictFrontmatterSchema: entry.strictFrontmatterSchema ?? false,
-						onPushIntentCreating: options.onPushIntentCreating ?? pushIntentLogger?.recordCreating.bind(pushIntentLogger),
+				{
+					...options,
+					strictFrontmatterSchema: entry.strictFrontmatterSchema ?? false,
+					onPushIntentCreating: options.onPushIntentCreating ?? pushIntentLogger?.recordCreating.bind(pushIntentLogger),
 					onPushIntentCreated: options.onPushIntentCreated ?? pushIntentLogger?.recordCreated.bind(pushIntentLogger),
+					onPushIntentCanonicalized: options.onPushIntentCanonicalized ?? pushIntentLogger?.recordCanonicalized.bind(pushIntentLogger),
 					onPushIntentCommitted: options.onPushIntentCommitted ?? pushIntentLogger?.recordCommitted.bind(pushIntentLogger),
 				}
 			);
@@ -1018,6 +1018,10 @@ export default class NotionFreezePlugin extends Plugin {
 			new Notice(`Push intent recovery blocked: local file not found at ${recovery.vaultPath}.`);
 			return;
 		}
+		if (!this.settings.apiKey) {
+			new Notice("Notion API key not set. Configure in plugin settings before applying the recovered canonical fields.");
+			return;
+		}
 		const reservation = await this.reservations.acquire({
 			entryId: `push-intent:${intentId}`,
 			entryName: recovery.vaultPath,
@@ -1027,11 +1031,29 @@ export default class NotionFreezePlugin extends Plugin {
 			policy: "manual",
 		});
 		try {
+			const client = createObsidianNotionClient(this.settings.apiKey);
+			const page = await notionRequest(() => client.pages.retrieve({
+				page_id: recovery.notionId,
+			} as never));
 			const raw = await this.app.vault.cachedRead(file);
-			const next = upsertFrontmatterValue(raw, "notion-id", recovery.notionId);
-			if (next !== raw) {
-				await modifyAtomic(this.app.vault, file, next, {
-					onCommitted: (path) => this.recordAtomicWriteCommitted(path, reservation.id),
+			const parsed = parseFrontmatter(raw);
+			const databaseId = this.databaseIdForRecovery(recovery.vaultPath, parsed.props, page);
+			const fieldsWritten = await commitCanonicalFrontmatter(
+				this.app,
+				{ file, props: parsed.props },
+				canonicalFields(page, recovery.notionId, databaseId),
+				{ onAtomicWriteCommitted: (path) => this.recordAtomicWriteCommitted(path, reservation.id) }
+			);
+			if (recovery.phase === "created") {
+				await appendIntentRecord(this.app.vault.adapter as PluginDataAdapter, `.obsidian/plugins/${this.manifest.id}/push-intents.jsonl`, {
+					intent_id: recovery.intentId,
+					reservation_id: reservation.id,
+					vault_path: recovery.vaultPath,
+					title_hash: "",
+					phase: "canonicalized",
+					notion_id: recovery.notionId,
+					fields_written: fieldsWritten,
+					completed_at: new Date().toISOString(),
 				});
 			}
 			await appendIntentRecord(this.app.vault.adapter as PluginDataAdapter, `.obsidian/plugins/${this.manifest.id}/push-intents.jsonl`, {
@@ -1044,7 +1066,7 @@ export default class NotionFreezePlugin extends Plugin {
 				completed_at: new Date().toISOString(),
 			});
 			this.removePushIntentRecovery(intentId);
-			new Notice(`Applied recovered Notion id to ${recovery.vaultPath}.`);
+			new Notice(`Applied recovered canonical fields to ${recovery.vaultPath}.`);
 		} catch (err) {
 			new Notice(`Push intent recovery failed: ${errorMessage(err)}`);
 			throw err;
@@ -1129,6 +1151,28 @@ export default class NotionFreezePlugin extends Plugin {
 
 	private removePushIntentRecovery(intentId: string): void {
 		this.pushIntentRecoveries = this.pushIntentRecoveries.filter((recovery) => recovery.intentId !== intentId);
+	}
+
+	private databaseIdForRecovery(vaultPath: string, props: Record<string, unknown>, page: unknown): string | undefined {
+		if (typeof props["notion-database-id"] === "string" && props["notion-database-id"]) {
+			return props["notion-database-id"];
+		}
+		const matched = this.settings.databases.find((entry) =>
+			pathStartsWith(vaultPath, resolveDatabasePathModel(this.settings, entry).pushSourceFolder)
+		);
+		if (matched?.databaseId) {
+			try {
+				return normalizeNotionId(matched.databaseId);
+			} catch {
+				return matched.databaseId;
+			}
+		}
+		const parent = page && typeof page === "object"
+			? (page as { parent?: { database_id?: unknown; data_source_id?: unknown } }).parent
+			: null;
+		if (typeof parent?.database_id === "string" && parent.database_id) return parent.database_id;
+		if (typeof parent?.data_source_id === "string" && parent.data_source_id) return parent.data_source_id;
+		return undefined;
 	}
 
 	private async writeSyncErrorLog(
@@ -1458,32 +1502,6 @@ function formatDatabaseResult(
 		msg += "\nErrors:\n" + result.errors.join("\n");
 	}
 	return msg;
-}
-
-function upsertFrontmatterValue(raw: string, key: string, value: string): string {
-	const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---(\r?\n?[\s\S]*)$/);
-	const escaped = yamlEscapeString(value);
-	if (!match) return `---\n${key}: ${escaped}\n---\n${raw}`;
-
-	const lines = match[1].split(/\r?\n/);
-	const keyPattern = new RegExp(`^("${escapeRegExp(key)}"|${escapeRegExp(key)}):\\s*.*$`);
-	const index = lines.findIndex((line) => keyPattern.test(line));
-	if (index >= 0) {
-		lines[index] = `${key}: ${escaped}`;
-	} else {
-		lines.unshift(`${key}: ${escaped}`);
-	}
-
-	return `---\n${lines.join("\n")}\n---${match[2]}`;
-}
-
-function yamlEscapeString(value: string): string {
-	if (/^[A-Za-z0-9_-]+$/.test(value)) return value;
-	return JSON.stringify(value);
-}
-
-function escapeRegExp(value: string): string {
-	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function parentPath(path: string): string {

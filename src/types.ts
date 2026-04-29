@@ -199,6 +199,7 @@ export interface SyncRunOptions {
 	context?: ReservationContext;
 	onPushIntentCreating?: (vaultPath: string, title: string) => Promise<string>;
 	onPushIntentCreated?: (intentId: string, notionId: string) => Promise<void>;
+	onPushIntentCanonicalized?: (intentId: string, fieldsWritten: string[]) => Promise<void>;
 	onPushIntentCommitted?: (intentId: string) => Promise<void>;
 	onAtomicWriteCommitted?: (path: string) => void;
 	strictFrontmatterSchema?: boolean;

@@ -6,6 +6,7 @@ import { PageWriteOptions, PageWriteResult, StandalonePageWriteOptions } from ".
 import { convertBlocksToMarkdown, convertRichText, fetchAllChildren } from "./block-converter";
 import { modifyAtomic, writeAtomic } from "./atomic-vault-write";
 import type { ReservationContext } from "./reservations";
+import { extractUniqueId } from "./notion-property-utils";
 
 const MAX_FILENAME_STEM_BYTES = 180;
 
@@ -258,18 +259,13 @@ function mapPropertiesToFrontmatter(
 			case "created_time":
 				frontmatter[key] = prop.created_time;
 				break;
-			case "last_edited_time":
-				frontmatter[key] = prop.last_edited_time;
-				break;
-			case "unique_id": {
-				const uid = (prop as { unique_id: { prefix: string | null; number: number | null } }).unique_id;
-				if (uid && uid.number !== null && uid.number !== undefined) {
-					frontmatter[key] = uid.prefix ? `${uid.prefix}-${uid.number}` : String(uid.number);
-				} else {
-					frontmatter[key] = null;
+				case "last_edited_time":
+					frontmatter[key] = prop.last_edited_time;
+					break;
+				case "unique_id": {
+					frontmatter[key] = extractUniqueId(prop) ?? null;
+					break;
 				}
-				break;
-			}
 			case "formula": {
 				const f = (prop as { formula: { type: string; string?: string | null; number?: number | null; boolean?: boolean | null; date?: { start: string; end: string | null } | null } }).formula;
 				if (!f) {
