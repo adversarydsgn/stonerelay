@@ -2,6 +2,16 @@
 
 Fork-side changes to `stonerelay` (vs. upstream `ran-codes/obsidian-notion-database-sync`).
 
+## v0.10.0 — 2026-04-29
+
+Templater Readiness bundle: conflict halt behavior, structured frontmatter validation, post-create canonicalization, and vault-canonical ID integration.
+
+**Behavior notes:**
+- Adds a per-database `templater_managed` toggle that preserves the stored source-of-truth value while disabling the dropdown and halting automatic conflict resolution for Templater-managed folders.
+- Validates structured frontmatter through Obsidian `parseYaml`, surfaces strict schema diagnostics, and preserves escaped multiline frontmatter behavior covered by the live substrate regression suite.
+- Canonicalizes push-created vault files with Notion-returned `notion-id`, `notion-url`, `notion-last-edited`, `notion-database-id`, and `notion-unique-id` fields, with push-intent recovery reapplying the same canonical commit after a crash window.
+- Integrates vault-canonical ID mirrors so push writes vault `ID` values into the configured Notion mirror property, pull defers or adopts Notion-only rows based on mirror state, `.next-id` remains read-only in steady state, and diagnostics surface sequence lag plus pending ID-stamp work.
+
 ## v0.9.11 — 2026-04-29
 
 Restores plugin-UI Notion calls, completes push-create canonical backfill, and gates live substrate verification.
